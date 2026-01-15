@@ -502,6 +502,10 @@ def main():
     if selected_employee != 'All':
         filtered_sales = filtered_sales[filtered_sales['Employee'] == selected_employee]
     
+    # Employee-specific header
+    if selected_employee != 'All' and len(filtered_sales) > 0:
+        st.info(f"👤 **Viewing analytics for: {selected_employee}** | 📅 **Date Range:** {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')} | 📊 **{len(filtered_sales):,} transactions**")
+    
     # Information about adding new data
     with st.sidebar.expander("ℹ️ Adding New Data"):
         st.write("""
@@ -528,9 +532,12 @@ def main():
         """)
     
     # Key Metrics
-    st.header("📈 Key Metrics")
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    if selected_employee != 'All':
+        st.header(f"📈 Performance Metrics - {selected_employee}")
+    else:
+        st.header("📈 Key Metrics")
     
+    # Calculate metrics
     total_net_sales = filtered_sales['Net_Sales'].sum()
     total_gross_sales = filtered_sales['Gross_Sales'].sum()
     total_transactions = len(filtered_sales)
@@ -538,18 +545,77 @@ def main():
     total_refunds = abs(filtered_sales['Refunds'].sum())
     unique_employees = filtered_sales['Employee'].nunique()
     
-    with col1:
-        st.metric("Total Net Sales", f"£{total_net_sales:,.2f}")
-    with col2:
-        st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}")
-    with col3:
-        st.metric("Total Transactions", f"{total_transactions:,}")
-    with col4:
-        st.metric("Avg Transaction", f"£{avg_transaction:,.2f}")
-    with col5:
-        st.metric("Total Refunds", f"£{total_refunds:,.2f}")
-    with col6:
-        st.metric("Active Employees", f"{unique_employees}")
+    # Calculate comparison metrics if employee is selected
+    if selected_employee != 'All' and len(sales_df) > len(filtered_sales):
+        # Get all data for comparison (same date range, all employees)
+        comparison_sales = sales_df[
+            (sales_df['Date'].dt.date >= start_date) & 
+            (sales_df['Date'].dt.date <= end_date)
+        ] if sales_df['Date'].notna().any() else sales_df
+        
+        all_avg_transaction = comparison_sales['Net_Sales'].sum() / len(comparison_sales) if len(comparison_sales) > 0 else 0
+        all_total_sales = comparison_sales['Net_Sales'].sum()
+        employee_share = (total_net_sales / all_total_sales * 100) if all_total_sales > 0 else 0
+        
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        
+        with col1:
+            delta = total_net_sales - (all_total_sales / comparison_sales['Employee'].nunique()) if comparison_sales['Employee'].nunique() > 0 else None
+            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}", 
+                     delta=f"{employee_share:.1f}% of total" if employee_share > 0 else None)
+        with col2:
+            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}")
+        with col3:
+            st.metric("Total Transactions", f"{total_transactions:,}")
+        with col4:
+            delta = avg_transaction - all_avg_transaction if all_avg_transaction > 0 else None
+            delta_str = f"£{delta:,.2f} vs avg" if delta is not None and delta != 0 else None
+            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", delta=delta_str)
+        with col5:
+            refund_rate = (total_refunds / total_gross_sales * 100) if total_gross_sales > 0 else 0
+            st.metric("Refund Rate", f"{refund_rate:.2f}%")
+        with col6:
+            # Days worked in period
+            days_worked = filtered_sales['Date'].nunique()
+            st.metric("Days Active", f"{days_worked}")
+        
+        # Employee-specific insights
+        st.subheader("📊 Employee Insights")
+        insight_col1, insight_col2, insight_col3, insight_col4 = st.columns(4)
+        
+        with insight_col1:
+            daily_avg = total_net_sales / days_worked if days_worked > 0 else 0
+            st.metric("Daily Average", f"£{daily_avg:,.2f}")
+        
+        with insight_col2:
+            best_day_sales = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().max()
+            st.metric("Best Day Sales", f"£{best_day_sales:,.2f}")
+        
+        with insight_col3:
+            best_day = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().idxmax()
+            if isinstance(best_day, pd.Timestamp):
+                st.metric("Best Day", best_day.strftime('%b %d, %Y'))
+            else:
+                st.metric("Best Day", str(best_day)[:10] if len(str(best_day)) > 10 else str(best_day))
+        
+        with insight_col4:
+            top_product_sales = filtered_sales.groupby('Products')['Net_Sales'].sum().max() if 'Products' in filtered_sales.columns else 0
+            st.metric("Top Product Sale", f"£{top_product_sales:,.2f}")
+    else:
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        
+        with col1:
+            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}")
+        with col2:
+            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}")
+        with col3:
+            st.metric("Total Transactions", f"{total_transactions:,}")
+        with col4:
+            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}")
+        with col5:
+            st.metric("Total Refunds", f"£{total_refunds:,.2f}")
+        with col6:
+            st.metric("Active Employees", f"{unique_employees}")
     
     st.divider()
     
@@ -565,11 +631,15 @@ def main():
     
     # TAB 1: Daily Trends Analysis
     with tab1:
-        st.header("📅 Daily Sales Trends")
+        if selected_employee != 'All':
+            st.header(f"📅 Daily Sales Trends - {selected_employee}")
+        else:
+            st.header("📅 Daily Sales Trends")
         
         col1, col2 = st.columns(2)
         
         with col1:
+            title = f'Daily Sales Trend - {selected_employee}' if selected_employee != 'All' else 'Daily Sales Trend'
             st.subheader("Daily Sales Over Time")
             daily_sales = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
             daily_sales['Date'] = pd.to_datetime(daily_sales['Date'])
@@ -580,7 +650,7 @@ def main():
                 x='Date',
                 y='Net_Sales',
                 labels={'Net_Sales': 'Net Sales (£)', 'Date': 'Date'},
-                title='Daily Sales Trend'
+                title=title
             )
             fig.update_traces(mode='lines+markers', line=dict(width=2))
             fig.update_layout(height=400)
@@ -646,7 +716,10 @@ def main():
     
     # TAB 2: Day of Week Analysis
     with tab2:
-        st.header("📆 Day of Week Analysis")
+        if selected_employee != 'All':
+            st.header(f"📆 Day of Week Analysis - {selected_employee}")
+        else:
+            st.header("📆 Day of Week Analysis")
         
         if day_of_week_df is not None:
             col1, col2 = st.columns(2)
@@ -720,7 +793,113 @@ def main():
     
     # TAB 3: Employee Performance
     with tab3:
-        st.header("👥 Employee Performance Analysis")
+        if selected_employee != 'All':
+            st.header(f"👥 Performance Analysis - {selected_employee}")
+            
+            # Employee-specific detailed analysis
+            if len(filtered_sales) > 0:
+                st.subheader("📊 Performance Summary")
+                
+                emp_col1, emp_col2, emp_col3, emp_col4 = st.columns(4)
+                
+                with emp_col1:
+                    total_sales = filtered_sales['Net_Sales'].sum()
+                    st.metric("Total Sales", f"£{total_sales:,.2f}")
+                
+                with emp_col2:
+                    avg_sale = filtered_sales['Net_Sales'].mean()
+                    st.metric("Average Sale", f"£{avg_sale:,.2f}")
+                
+                with emp_col3:
+                    transaction_count = len(filtered_sales)
+                    st.metric("Transactions", f"{transaction_count:,}")
+                
+                with emp_col4:
+                    days_active = filtered_sales['Date'].nunique()
+                    st.metric("Days Active", f"{days_active}")
+                
+                # Comparison with all employees (same date range)
+                comparison_sales = sales_df[
+                    (sales_df['Date'].dt.date >= start_date) & 
+                    (sales_df['Date'].dt.date <= end_date)
+                ] if sales_df['Date'].notna().any() else sales_df
+                
+                if len(comparison_sales) > len(filtered_sales):
+                    st.subheader("📈 Performance Comparison")
+                    comp_col1, comp_col2, comp_col3 = st.columns(3)
+                    
+                    all_avg_sale = comparison_sales['Net_Sales'].mean()
+                    all_total = comparison_sales['Net_Sales'].sum()
+                    all_employee_count = comparison_sales['Employee'].nunique()
+                    avg_per_employee = all_total / all_employee_count if all_employee_count > 0 else 0
+                    
+                    with comp_col1:
+                        vs_avg = ((avg_sale - all_avg_sale) / all_avg_sale * 100) if all_avg_sale > 0 else 0
+                        st.metric("Avg Sale vs All", f"£{avg_sale:,.2f}", 
+                                 delta=f"{vs_avg:+.1f}%", delta_color="normal" if vs_avg >= 0 else "inverse")
+                    
+                    with comp_col2:
+                        vs_total = ((total_sales - avg_per_employee) / avg_per_employee * 100) if avg_per_employee > 0 else 0
+                        st.metric("Total vs Avg Employee", f"£{total_sales:,.2f}",
+                                 delta=f"{vs_total:+.1f}%", delta_color="normal" if vs_total >= 0 else "inverse")
+                    
+                    with comp_col3:
+                        # Rank among all employees
+                        employee_totals = comparison_sales.groupby('Employee')['Net_Sales'].sum().sort_values(ascending=False)
+                        rank = (employee_totals.index.get_loc(selected_employee) + 1) if selected_employee in employee_totals.index else None
+                        total_employees = len(employee_totals)
+                        if rank:
+                            percentile = ((total_employees - rank + 1) / total_employees * 100) if total_employees > 0 else 0
+                            st.metric("Rank", f"#{rank} of {total_employees}", 
+                                     delta=f"Top {percentile:.0f}%", delta_color="normal" if percentile >= 50 else "inverse")
+                
+                # Employee's best products
+                st.subheader("🛍️ Top Products Sold")
+                if 'Products' in filtered_sales.columns:
+                    product_sales = {}
+                    for products in filtered_sales['Products'].dropna():
+                        if isinstance(products, str):
+                            items = products.split(',')
+                            for item in items:
+                                if 'x' in item:
+                                    try:
+                                        product_name = item.split('x')[0].strip()
+                                        if product_name:
+                                            # Try to extract sale amount
+                                            sale_amount = filtered_sales[filtered_sales['Products'].str.contains(product_name, na=False)]['Net_Sales'].sum()
+                                            product_sales[product_name] = product_sales.get(product_name, 0) + 1
+                                    except:
+                                        pass
+                    
+                    if product_sales:
+                        top_products = pd.Series(product_sales).sort_values(ascending=False).head(10)
+                        fig = px.bar(
+                            x=top_products.values,
+                            y=top_products.index,
+                            orientation='h',
+                            labels={'x': 'Number of Sales', 'y': 'Product'},
+                            title=f'Top Products - {selected_employee}'
+                        )
+                        fig.update_layout(height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                # Employee's performance over time
+                st.subheader("📈 Sales Trend")
+                monthly_emp_sales = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M'))['Net_Sales'].sum()
+                monthly_emp_sales.index = monthly_emp_sales.index.astype(str)
+                
+                fig = px.line(
+                    x=monthly_emp_sales.index,
+                    y=monthly_emp_sales.values,
+                    markers=True,
+                    labels={'x': 'Month', 'y': 'Net Sales (£)'},
+                    title=f'Monthly Sales Trend - {selected_employee}'
+                )
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+                
+        else:
+            st.header("👥 Employee Performance Analysis")
         
         if employee_df is not None:
             col1, col2 = st.columns(2)
@@ -805,7 +984,10 @@ def main():
     
     # TAB 4: Hourly Patterns
     with tab4:
-        st.header("⏰ Hourly Sales Patterns")
+        if selected_employee != 'All':
+            st.header(f"⏰ Hourly Sales Patterns - {selected_employee}")
+        else:
+            st.header("⏰ Hourly Sales Patterns")
         
         if hourly_df is not None:
             col1, col2 = st.columns(2)
@@ -879,7 +1061,10 @@ def main():
     
     # TAB 5: Product Patterns
     with tab5:
-        st.header("🛍️ Product Patterns Analysis")
+        if selected_employee != 'All':
+            st.header(f"🛍️ Product Patterns - {selected_employee}")
+        else:
+            st.header("🛍️ Product Patterns Analysis")
         
         if product_df is not None:
             col1, col2 = st.columns(2)
@@ -941,7 +1126,10 @@ def main():
     
     # TAB 6: Future Projections
     with tab6:
-        st.header("🔮 Future Sales Projections")
+        if selected_employee != 'All':
+            st.header(f"🔮 Future Sales Projections - {selected_employee}")
+        else:
+            st.header("🔮 Future Sales Projections")
         
         st.info("""
         **Improved Forecasting Methodology:** 
