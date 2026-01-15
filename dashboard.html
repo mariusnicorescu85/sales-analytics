@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sales Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+
+        .stat-card h3 {
+            color: #666;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .stat-card .value {
+            color: #333;
+            font-size: 2em;
+            font-weight: bold;
+        }
+
+        .stat-card .change {
+            color: #4caf50;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .chart-card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+        }
+
+        .table-container {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow-x: auto;
+        }
+
+        .table-container h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        th {
+            background: #f8f9fa;
+            color: #333;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+
+        tr:hover {
+            background: #f8f9fa;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: white;
+            font-size: 1.2em;
+        }
+
+        .filter-section {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .filter-section label {
+            margin-right: 15px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .filter-section select {
+            padding: 8px 15px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 1em;
+            margin-right: 20px;
+        }
+
+        .filter-section select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Sales Dashboard</h1>
+            <p>Comprehensive Sales Analytics & Performance Metrics</p>
+        </div>
+
+        <div id="loading" class="loading">
+            Loading data...
+        </div>
+
+        <div id="dashboard" style="display: none;">
+            <div class="stats-grid" id="statsGrid"></div>
+
+            <div class="filter-section">
+                <label>Filter by Employee:</label>
+                <select id="employeeFilter" onchange="updateDashboard()">
+                    <option value="all">All Employees</option>
+                </select>
+                <label>Date Range:</label>
+                <select id="dateRangeFilter" onchange="updateDashboard()">
+                    <option value="all">All Time</option>
+                    <option value="last30">Last 30 Days</option>
+                    <option value="last90">Last 90 Days</option>
+                    <option value="last365">Last Year</option>
+                </select>
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h2>Top Employees by Net Sales</h2>
+                    <div class="chart-container">
+                        <canvas id="topEmployeesChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Sales by Day of Week</h2>
+                    <div class="chart-container">
+                        <canvas id="dayOfWeekChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Sales Trend Over Time</h2>
+                    <div class="chart-container">
+                        <canvas id="salesTrendChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="chart-card">
+                    <h2>Average Transaction Value by Employee</h2>
+                    <div class="chart-container">
+                        <canvas id="avgTransactionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <h2>Employee Performance Details</h2>
+                <div style="overflow-x: auto;">
+                    <table id="employeeTable">
+                        <thead>
+                            <tr>
+                                <th>Employee</th>
+                                <th>Total Net Sales</th>
+                                <th>Average Sale</th>
+                                <th>Transaction Count</th>
+                                <th>Total Gross Sales</th>
+                                <th>Refund Rate (%)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="employeeTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allSalesData = [];
+        let employeePerformanceData = [];
+        let charts = {};
+
+        // Load CSV files
+        async function loadData() {
+            try {
+                // Load employee performance data
+                const employeeResponse = await fetch('employee_performance_analysis.csv');
+                const employeeText = await employeeResponse.text();
+                employeePerformanceData = parseEmployeeCSV(employeeText);
+
+                // Load sales transaction data
+                const salesResponse = await fetch('Opatra Sales from July 2023-Grid view.csv');
+                const salesText = await salesResponse.text();
+                allSalesData = parseSalesCSV(salesText);
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('dashboard').style.display = 'block';
+                
+                initializeDashboard();
+            } catch (error) {
+                console.error('Error loading data:', error);
+                document.getElementById('loading').innerHTML = 
+                    '<p style="color: red;">Error loading data. Please ensure the CSV files are in the same directory.</p>';
+            }
+        }
+
+        function parseEmployeeCSV(text) {
+            const lines = text.split('\n').filter(line => line.trim());
+            const data = [];
+            
+            for (let i = 3; i < lines.length; i++) {
+                const line = lines[i];
+                if (!line.trim()) continue;
+                
+                const parts = line.split(',');
+                if (parts.length >= 6 && parts[0].trim()) {
+                    data.push({
+                        employee: parts[0].trim(),
+                        netSalesSum: parseFloat(parts[1]) || 0,
+                        netSalesMean: parseFloat(parts[2]) || 0,
+                        transactionCount: parseInt(parts[3]) || 0,
+                        grossSalesSum: parseFloat(parts[4]) || 0,
+                        refundsSum: parseFloat(parts[5]) || 0,
+                        refundRate: parseFloat(parts[6]) || 0
+                    });
+                }
+            }
+            return data;
+        }
+
+        function parseSalesCSV(text) {
+            const lines = text.split('\n').filter(line => line.trim());
+            const data = [];
+            
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i];
+                if (!line.trim()) continue;
+                
+                // Parse CSV line (handling quoted fields)
+                const parts = [];
+                let current = '';
+                let inQuotes = false;
+                
+                for (let j = 0; j < line.length; j++) {
+                    const char = line[j];
+                    if (char === '"') {
+                        inQuotes = !inQuotes;
+                    } else if (char === ',' && !inQuotes) {
+                        parts.push(current);
+                        current = '';
+                    } else {
+                        current += char;
+                    }
+                }
+                parts.push(current);
+                
+                if (parts.length >= 11) {
+                    const netSales = parseFloat(parts[5].replace(/[£,]/g, '')) || 0;
+                    const grossSales = parseFloat(parts[6].replace(/[£,]/g, '')) || 0;
+                    const refunds = parts[7] ? parseFloat(parts[7].replace(/[£,]/g, '')) : 0;
+                    
+                    // Parse date
+                    let date = null;
+                    if (parts[2]) {
+                        const dateStr = parts[2].trim();
+                        date = new Date(dateStr);
+                        if (isNaN(date.getTime())) {
+                            // Try alternative date format
+                            const parts2 = dateStr.split('/');
+                            if (parts2.length === 3) {
+                                date = new Date(parts2[2], parts2[1] - 1, parts2[0]);
+                            }
+                        }
+                    }
+                    
+                    data.push({
+                        transaction: parts[0],
+                        customer: parts[1],
+                        date: date,
+                        time: parts[3],
+                        dayOfWeek: parts[4],
+                        netSales: netSales,
+                        grossSales: grossSales,
+                        refunds: refunds,
+                        employee: parts[8] || '',
+                        commissions: parts[9],
+                        products: parts[10]
+                    });
+                }
+            }
+            return data;
+        }
+
+        function initializeDashboard() {
+            // Populate employee filter
+            const employeeFilter = document.getElementById('employeeFilter');
+            const uniqueEmployees = [...new Set(allSalesData.map(d => d.employee).filter(e => e))].sort();
+            uniqueEmployees.forEach(emp => {
+                const option = document.createElement('option');
+                option.value = emp;
+                option.textContent = emp;
+                employeeFilter.appendChild(option);
+            });
+
+            updateDashboard();
+        }
+
+        function getFilteredData() {
+            const employeeFilter = document.getElementById('employeeFilter').value;
+            const dateRangeFilter = document.getElementById('dateRangeFilter').value;
+            
+            let filtered = allSalesData.filter(d => d.netSales > 0); // Only positive sales
+            
+            if (employeeFilter !== 'all') {
+                filtered = filtered.filter(d => d.employee === employeeFilter);
+            }
+            
+            if (dateRangeFilter !== 'all') {
+                const now = new Date();
+                const cutoff = new Date();
+                
+                switch(dateRangeFilter) {
+                    case 'last30':
+                        cutoff.setDate(now.getDate() - 30);
+                        break;
+                    case 'last90':
+                        cutoff.setDate(now.getDate() - 90);
+                        break;
+                    case 'last365':
+                        cutoff.setDate(now.getDate() - 365);
+                        break;
+                }
+                
+                filtered = filtered.filter(d => d.date && d.date >= cutoff);
+            }
+            
+            return filtered;
+        }
+
+        function updateDashboard() {
+            const filteredData = getFilteredData();
+            
+            updateStats(filteredData);
+            updateTopEmployeesChart(filteredData);
+            updateDayOfWeekChart(filteredData);
+            updateSalesTrendChart(filteredData);
+            updateAvgTransactionChart(filteredData);
+            updateEmployeeTable();
+        }
+
+        function updateStats(data) {
+            const totalNetSales = data.reduce((sum, d) => sum + d.netSales, 0);
+            const totalGrossSales = data.reduce((sum, d) => sum + d.grossSales, 0);
+            const totalRefunds = Math.abs(data.reduce((sum, d) => sum + (d.refunds || 0), 0));
+            const totalTransactions = data.length;
+            const avgTransaction = totalTransactions > 0 ? totalNetSales / totalTransactions : 0;
+            const uniqueEmployees = new Set(data.map(d => d.employee).filter(e => e)).size;
+            
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.innerHTML = `
+                <div class="stat-card">
+                    <h3>Total Net Sales</h3>
+                    <div class="value">£${totalNetSales.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Gross Sales</h3>
+                    <div class="value">£${totalGrossSales.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Transactions</h3>
+                    <div class="value">${totalTransactions.toLocaleString()}</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Average Transaction</h3>
+                    <div class="value">£${avgTransaction.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Refunds</h3>
+                    <div class="value">£${totalRefunds.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Active Employees</h3>
+                    <div class="value">${uniqueEmployees}</div>
+                </div>
+            `;
+        }
+
+        function updateTopEmployeesChart(data) {
+            const employeeSales = {};
+            
+            data.forEach(d => {
+                if (d.employee) {
+                    if (!employeeSales[d.employee]) {
+                        employeeSales[d.employee] = 0;
+                    }
+                    employeeSales[d.employee] += d.netSales;
+                }
+            });
+            
+            const sorted = Object.entries(employeeSales)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const ctx = document.getElementById('topEmployeesChart').getContext('2d');
+            
+            if (charts.topEmployees) {
+                charts.topEmployees.destroy();
+            }
+            
+            charts.topEmployees = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: sorted.map(e => e[0]),
+                    datasets: [{
+                        label: 'Net Sales (£)',
+                        data: sorted.map(e => e[1]),
+                        backgroundColor: 'rgba(102, 126, 234, 0.8)',
+                        borderColor: 'rgba(102, 126, 234, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '£' + context.parsed.y.toLocaleString('en-GB', {minimumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '£' + value.toLocaleString('en-GB');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateDayOfWeekChart(data) {
+            const daySales = {
+                'Monday': 0,
+                'Tuesday': 0,
+                'Wednesday': 0,
+                'Thursday': 0,
+                'Friday': 0,
+                'Saturday': 0,
+                'Sunday': 0
+            };
+            
+            data.forEach(d => {
+                if (d.dayOfWeek && daySales.hasOwnProperty(d.dayOfWeek)) {
+                    daySales[d.dayOfWeek] += d.netSales;
+                }
+            });
+            
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            const ctx = document.getElementById('dayOfWeekChart').getContext('2d');
+            
+            if (charts.dayOfWeek) {
+                charts.dayOfWeek.destroy();
+            }
+            
+            charts.dayOfWeek = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: days,
+                    datasets: [{
+                        label: 'Net Sales (£)',
+                        data: days.map(day => daySales[day]),
+                        borderColor: 'rgba(118, 75, 162, 1)',
+                        backgroundColor: 'rgba(118, 75, 162, 0.2)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '£' + context.parsed.y.toLocaleString('en-GB', {minimumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '£' + value.toLocaleString('en-GB');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateSalesTrendChart(data) {
+            // Group by month
+            const monthlySales = {};
+            
+            data.forEach(d => {
+                if (d.date && !isNaN(d.date.getTime())) {
+                    const monthKey = `${d.date.getFullYear()}-${String(d.date.getMonth() + 1).padStart(2, '0')}`;
+                    if (!monthlySales[monthKey]) {
+                        monthlySales[monthKey] = 0;
+                    }
+                    monthlySales[monthKey] += d.netSales;
+                }
+            });
+            
+            const sortedMonths = Object.keys(monthlySales).sort();
+            const ctx = document.getElementById('salesTrendChart').getContext('2d');
+            
+            if (charts.salesTrend) {
+                charts.salesTrend.destroy();
+            }
+            
+            charts.salesTrend = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: sortedMonths,
+                    datasets: [{
+                        label: 'Monthly Net Sales (£)',
+                        data: sortedMonths.map(m => monthlySales[m]),
+                        borderColor: 'rgba(76, 175, 80, 1)',
+                        backgroundColor: 'rgba(76, 175, 80, 0.2)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '£' + context.parsed.y.toLocaleString('en-GB', {minimumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '£' + value.toLocaleString('en-GB');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateAvgTransactionChart(data) {
+            const employeeAvg = {};
+            const employeeCount = {};
+            
+            data.forEach(d => {
+                if (d.employee) {
+                    if (!employeeAvg[d.employee]) {
+                        employeeAvg[d.employee] = 0;
+                        employeeCount[d.employee] = 0;
+                    }
+                    employeeAvg[d.employee] += d.netSales;
+                    employeeCount[d.employee]++;
+                }
+            });
+            
+            const averages = Object.entries(employeeAvg)
+                .map(([emp, total]) => [emp, total / employeeCount[emp]])
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const ctx = document.getElementById('avgTransactionChart').getContext('2d');
+            
+            if (charts.avgTransaction) {
+                charts.avgTransaction.destroy();
+            }
+            
+            charts.avgTransaction = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: averages.map(e => e[0]),
+                    datasets: [{
+                        label: 'Average Transaction Value (£)',
+                        data: averages.map(e => e[1]),
+                        backgroundColor: 'rgba(255, 152, 0, 0.8)',
+                        borderColor: 'rgba(255, 152, 0, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return '£' + context.parsed.y.toLocaleString('en-GB', {minimumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) {
+                                    return '£' + value.toLocaleString('en-GB');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateEmployeeTable() {
+            const tbody = document.getElementById('employeeTableBody');
+            tbody.innerHTML = '';
+            
+            // Sort by net sales
+            const sorted = [...employeePerformanceData].sort((a, b) => b.netSalesSum - a.netSalesSum);
+            
+            sorted.forEach(emp => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${emp.employee}</td>
+                    <td>£${emp.netSalesSum.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td>£${emp.netSalesMean.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td>${emp.transactionCount.toLocaleString()}</td>
+                    <td>£${emp.grossSalesSum.toLocaleString('en-GB', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td>${emp.refundRate.toFixed(2)}%</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        // Load data when page loads
+        loadData();
+    </script>
+</body>
+</html>

@@ -1,0 +1,304 @@
+{
+  "name": "sales details from 1st of jan airtable testing",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Filter out header rows and clean data\nconst items = $input.all();\nconst cleanedItems = [];\n\n// Function to format time to readable format\nfunction formatTime(timeString) {\n  if (!timeString || timeString === 'NaN' || timeString === '') {\n    return '';\n  }\n  \n  try {\n    // Try to parse ISO 8601 format (e.g., \"2026-01-01T12:25:19.000+00:00\")\n    const date = new Date(timeString);\n    \n    // Check if date is valid\n    if (isNaN(date.getTime())) {\n      return timeString; // Return original if can't parse\n    }\n    \n    // Format as HH:MM:SS AM/PM (12-hour format)\n    let hours = date.getHours();\n    const minutes = date.getMinutes().toString().padStart(2, '0');\n    const seconds = date.getSeconds().toString().padStart(2, '0');\n    const ampm = hours >= 12 ? 'PM' : 'AM';\n    hours = hours % 12;\n    hours = hours ? hours : 12; // 0 should be 12\n    hours = hours.toString().padStart(2, '0');\n    \n    return `${hours}:${minutes}:${seconds} ${ampm}`;\n  } catch (e) {\n    // If parsing fails, return original string\n    return timeString;\n  }\n}\n\n// Function to format date (YYYY-MM-DD)\nfunction formatDate(dateString) {\n  if (!dateString || dateString === 'NaN' || dateString === '') {\n    return '';\n  }\n  \n  try {\n    const date = new Date(dateString);\n    \n    // Check if date is valid\n    if (isNaN(date.getTime())) {\n      return dateString; // Return original if can't parse\n    }\n    \n    // Format date as YYYY-MM-DD\n    const year = date.getFullYear();\n    const month = (date.getMonth() + 1).toString().padStart(2, '0');\n    const day = date.getDate().toString().padStart(2, '0');\n    \n    return `${year}-${month}-${day}`;\n  } catch (e) {\n    // If parsing fails, return original string\n    return dateString;\n  }\n}\n\n// Function to get day of week\nfunction getDayOfWeek(dateString) {\n  if (!dateString || dateString === 'NaN' || dateString === '') {\n    return '';\n  }\n  \n  try {\n    const date = new Date(dateString);\n    \n    // Check if date is valid\n    if (isNaN(date.getTime())) {\n      return '';\n    }\n    \n    // Get day of week\n    const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];\n    return daysOfWeek[date.getDay()];\n  } catch (e) {\n    return '';\n  }\n}\n\n// Function to extract employee name from Commissions field\nfunction extractEmployeeFromCommissions(commissionsString) {\n  if (!commissionsString || commissionsString === 'NaN' || commissionsString === '') {\n    return '';\n  }\n  \n  // Commissions format is like \"Esmaya: -130\" or \"Esmaya Purcell: -130\"\n  // Extract the part before the colon\n  const colonIndex = commissionsString.indexOf(':');\n  if (colonIndex > 0) {\n    return commissionsString.substring(0, colonIndex).trim();\n  }\n  \n  return commissionsString.trim();\n}\n\nfor (const item of items) {\n  const json = item.json;\n  \n  // Skip rows that don't have a valid Trans # (header rows)\n  if (json['Trans #'] && json['Trans #'] !== 'NaN' && json['Trans #'] !== '') {\n    // Parse Gross Sales\n    const grossSales = json['Gross Sales'] ? parseFloat(String(json['Gross Sales']).replace(/[^0-9.-]/g, '')) || 0 : 0;\n    \n    // Separate refunds from gross sales\n    let refunds = null;\n    let finalGrossSales = grossSales;\n    let employee = json['Employee'] || '';\n    let commissions = json['Commissions'] || '';\n    \n    // If Gross Sales is negative, move it to Refunds\n    if (grossSales < 0) {\n      refunds = grossSales; // Keep as negative value\n      finalGrossSales = 0; // Set Gross Sales to 0\n      \n      // For refunds, extract employee name from Commissions and use it for both fields\n      const employeeFromCommissions = extractEmployeeFromCommissions(commissions);\n      if (employeeFromCommissions) {\n        employee = employeeFromCommissions;\n        commissions = employeeFromCommissions;\n      }\n    }\n    \n    // Clean and transform the data\n    const cleanedItem = {\n      json: {\n        'Trans #': json['Trans #'] || '',\n        'Customer': json['Customer'] || '(N/A)',\n        'Date': formatDate(json['Date']),\n        'Day of the Week': getDayOfWeek(json['Date']),\n        'Time': formatTime(json['Time']),\n        'Net Sales': json['Net Sales'] ? parseFloat(String(json['Net Sales']).replace(/[^0-9.-]/g, '')) || 0 : 0,\n        'Gross Sales': finalGrossSales,\n        'Employee': employee,\n        'Commissions': commissions,\n        'Products': json['Products'] || ''\n      }\n    };\n    \n    // Only add Refunds field if there's an actual refund value\n    if (refunds !== null && refunds < 0) {\n      cleanedItem.json['Refunds'] = refunds;\n    }\n    \n    cleanedItems.push(cleanedItem);\n  }\n}\n\nreturn cleanedItems;"
+      },
+      "id": "4e511449-954e-4771-ba3c-53b087ef03f0",
+      "name": "Clean and Filter Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        80
+      ]
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        80
+      ],
+      "id": "3a8d691d-441a-42c0-b5a9-67ed6d0d68a7",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "1_MF1RDBEO-gYP2TVz22Ai-FUIu05b6Ty",
+          "mode": "list",
+          "cachedResultName": "pos_entry_list.xlsx",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1_MF1RDBEO-gYP2TVz22Ai-FUIu05b6Ty/edit?usp=drivesdk&ouid=102757457202183172303&rtpof=true&sd=true"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -496,
+        80
+      ],
+      "id": "8fa39c21-ce9a-4fa2-8d03-5997658dd1a6",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "N9O7q6jvu9vpPv9c",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -272,
+        80
+      ],
+      "id": "b292d9d7-57ea-4aa5-b58f-07cb89cbf413",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "appFM5cdHTTI8IugV",
+          "mode": "list",
+          "cachedResultName": "Sales Details",
+          "cachedResultUrl": "https://airtable.com/appFM5cdHTTI8IugV"
+        },
+        "table": {
+          "__rl": true,
+          "value": "tblKg4uHWIbIBJFyv",
+          "mode": "list",
+          "cachedResultName": "Opatra Sales from July 2023",
+          "cachedResultUrl": "https://airtable.com/appFM5cdHTTI8IugV/tblKg4uHWIbIBJFyv"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.Date }}",
+            "Customer": "={{ $json.Customer }}",
+            "Transaction": "={{ $json[\"Trans #\"] }}",
+            "Time": "={{ DateTime.fromFormat($json.Date + ' ' + $json.Time, 'yyyy-MM-dd hh:mm:ss a').toISO() }}",
+            "Day of the Week": "={{ $json[\"Day of the Week\"] }}",
+            "Net Sales": "={{ $json[\"Net Sales\"] }}",
+            "Gross Sales": "={{ $json[\"Gross Sales\"] }}",
+            "Refunds": "={{ $json.Refunds }}",
+            "Products": "={{ $json.Products }}",
+            "Commissions": "={{ $json.Commissions }}",
+            "Employee": "={{ $json.Employee }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Transaction",
+              "displayName": "Transaction",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Customer",
+              "displayName": "Customer",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Time",
+              "displayName": "Time",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Day of the Week",
+              "displayName": "Day of the Week",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Net Sales",
+              "displayName": "Net Sales",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Gross Sales",
+              "displayName": "Gross Sales",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Refunds",
+              "displayName": "Refunds",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Employee",
+              "displayName": "Employee",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Commissions",
+              "displayName": "Commissions",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Products",
+              "displayName": "Products",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        160,
+        80
+      ],
+      "id": "5dd28c70-91e0-417e-be9c-e8719ba537b2",
+      "name": "Create a record",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "jwkqnnok7p6Avgzb",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Clean and Filter Data": {
+      "main": [
+        [
+          {
+            "node": "Create a record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Clean and Filter Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "7add1779-f615-41cf-aa2e-971e8e319c54",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "aebeac476a1acfcf90b4162e732ed3266fe85da6cef0bb017b9556c9c58fe307"
+  },
+  "id": "ntycTfscwt4yUt6y",
+  "tags": []
+}
