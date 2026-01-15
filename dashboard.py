@@ -989,75 +989,130 @@ def main():
         else:
             st.header("⏰ Hourly Sales Patterns")
         
-        if hourly_df is not None:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Sales by Hour of Day")
-                hourly_df_sorted = hourly_df.sort_values('Hour')
-                fig = px.bar(
-                    hourly_df_sorted,
-                    x='Hour',
-                    y='Net_Sales_Sum',
-                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
-                    color='Net_Sales_Sum',
-                    color_continuous_scale='Purples'
-                )
-                fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.subheader("Average Transaction by Hour")
-                fig = px.line(
-                    hourly_df_sorted,
-                    x='Hour',
-                    y='Net_Sales_Mean',
-                    markers=True,
-                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
-                    title='Average Transaction Value by Hour'
-                )
-                fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Transaction Volume by Hour")
-                fig = px.bar(
-                    hourly_df_sorted,
-                    x='Hour',
-                    y='Transaction_Count',
-                    labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
-                    color='Transaction_Count',
-                    color_continuous_scale='Blues'
-                )
-                fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.subheader("Peak Hours Analysis")
-                peak_hours = hourly_df_sorted.nlargest(5, 'Net_Sales_Sum')
-                st.write("**Top 5 Peak Sales Hours:**")
-                for idx, row in peak_hours.iterrows():
-                    hour_str = f"{int(row['Hour']):02d}:00"
-                    st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
-        else:
-            # Fallback to calculated data
-            if 'Hour' in filtered_sales.columns:
+        # Use pre-aggregated data only if no employee filter is applied
+        # Otherwise, calculate from filtered_sales to show employee-specific patterns
+        if selected_employee != 'All' or 'Hour' not in filtered_sales.columns or hourly_df is None:
+            # Calculate from filtered data (supports employee filtering)
+            if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
                 hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+                hourly_sales.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
                 hourly_sales = hourly_sales.sort_values('Hour')
+                hourly_sales['Gross_Sales_Sum'] = filtered_sales.groupby('Hour')['Gross_Sales'].sum().values
                 
-                fig = px.bar(
-                    hourly_sales,
-                    x='Hour',
-                    y='sum',
-                    labels={'sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
-                    title='Sales by Hour of Day'
-                )
-                fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
+                    st.subheader("Sales by Hour of Day")
+                    fig = px.bar(
+                        hourly_sales,
+                        x='Hour',
+                        y='Net_Sales_Sum',
+                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                        color='Net_Sales_Sum',
+                        color_continuous_scale='Purples',
+                        title=title
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
+                    st.subheader("Average Transaction by Hour")
+                    fig = px.line(
+                        hourly_sales,
+                        x='Hour',
+                        y='Net_Sales_Mean',
+                        markers=True,
+                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                        title=title
+                    )
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
+                    st.subheader("Transaction Volume by Hour")
+                    fig = px.bar(
+                        hourly_sales,
+                        x='Hour',
+                        y='Transaction_Count',
+                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                        color='Transaction_Count',
+                        color_continuous_scale='Blues',
+                        title=title
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Peak Hours Analysis")
+                    peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
+                    if len(peak_hours) > 0:
+                        st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
+                        for idx, row in peak_hours.iterrows():
+                            hour_str = f"{int(row['Hour']):02d}:00"
+                            st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
+                    else:
+                        st.info("No hourly data available for the selected filters.")
             else:
                 st.info("Hourly data not available. Please ensure Time column is properly formatted.")
+        else:
+            # Use pre-aggregated data when viewing all employees
+            if hourly_df is not None:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Sales by Hour of Day")
+                    hourly_df_sorted = hourly_df.sort_values('Hour')
+                    fig = px.bar(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Net_Sales_Sum',
+                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                        color='Net_Sales_Sum',
+                        color_continuous_scale='Purples'
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Average Transaction by Hour")
+                    fig = px.line(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Net_Sales_Mean',
+                        markers=True,
+                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                        title='Average Transaction Value by Hour'
+                    )
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Transaction Volume by Hour")
+                    fig = px.bar(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Transaction_Count',
+                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                        color='Transaction_Count',
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Peak Hours Analysis")
+                    peak_hours = hourly_df_sorted.nlargest(5, 'Net_Sales_Sum')
+                    st.write("**Top 5 Peak Sales Hours:**")
+                    for idx, row in peak_hours.iterrows():
+                        hour_str = f"{int(row['Hour']):02d}:00"
+                        st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
     
     # TAB 5: Product Patterns
     with tab5:
