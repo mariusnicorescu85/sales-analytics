@@ -7,7 +7,67 @@ import numpy as np
 from scipy import stats
 import warnings
 import os
+import re
 warnings.filterwarnings('ignore')
+
+# Employee name normalization mapping
+# Add known variations here - format: "variant_name": "canonical_name"
+EMPLOYEE_NAME_MAPPING = {
+    "Duaaz": "Duaa Zainab",
+    "Duaa": "Duaa Zainab",
+    # Add more mappings as needed
+    # "John D": "John Doe",
+    # "JD": "John Doe",
+}
+
+def normalize_employee_name(name):
+    """
+    Normalize employee names to handle variations.
+    Uses manual mapping first, then applies normalization rules.
+    """
+    if pd.isna(name) or name == '':
+        return name
+    
+    name_str = str(name).strip()
+    
+    # Check manual mapping first
+    if name_str in EMPLOYEE_NAME_MAPPING:
+        return EMPLOYEE_NAME_MAPPING[name_str]
+    
+    # Normalize: remove extra spaces, convert to title case
+    normalized = ' '.join(name_str.split())
+    
+    # Check if normalized version exists in mapping (case-insensitive)
+    for variant, canonical in EMPLOYEE_NAME_MAPPING.items():
+        if variant.lower() == normalized.lower():
+            return canonical
+    
+    return normalized
+
+def find_similar_employee_names(df):
+    """
+    Find potentially duplicate employee names by comparing normalized versions.
+    Returns a dictionary of potential duplicates.
+    """
+    if 'Employee' not in df.columns:
+        return {}
+    
+    # Get unique employee names
+    employees = df['Employee'].dropna().unique()
+    
+    # Create normalized versions (remove spaces, lowercase)
+    normalized_map = {}
+    for emp in employees:
+        normalized = re.sub(r'\s+', '', str(emp).lower())
+        if normalized not in normalized_map:
+            normalized_map[normalized] = []
+        normalized_map[normalized].append(emp)
+    
+    # Find duplicates (same normalized version but different original names)
+    duplicates = {norm: names for norm, names in normalized_map.items() 
+                  if len(names) > 1 and len(set(names)) > 1}
+    
+    return duplicates
 
 # Try to import Airtable (optional)
 try:
@@ -74,8 +134,19 @@ def load_sales_data():
             if pd.isna(value):
                 return 0
             if isinstance(value, str):
-                return float(value.replace('£', '').replace(',', '').strip() or 0)
-            return float(value) if value else 0
+                # Remove all non-numeric characters except minus sign and decimal point
+                # This handles £, special characters, commas, etc.
+                cleaned = re.sub(r'[^\d.-]', '', value.strip())
+                if cleaned == '' or cleaned == '-':
+                    return 0
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return 0
+            try:
+                return float(value) if value else 0
+            except (ValueError, TypeError):
+                return 0
         
         df['Net_Sales'] = df['Net Sales'].apply(clean_currency)
         df['Gross_Sales'] = df['Gross Sales'].apply(clean_currency)
@@ -88,12 +159,31 @@ def load_sales_data():
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         
         df = df[df['Date'].notna()]
-        df = df[df['Net_Sales'] > 0]
+        # Keep rows with Net_Sales > 0 OR rows with refunds (refunds are separate transactions with Net_Sales <= 0)
+        df = df[(df['Net_Sales'] > 0) | (df['Refunds'] != 0)]
+        
+        # Ensure Employee column exists and clean it
+        if 'Employee' in df.columns:
+            # Convert to string and strip whitespace
+            df['Employee'] = df['Employee'].astype(str).str.strip()
+            # Replace empty strings and 'nan' with actual NaN
+            df['Employee'] = df['Employee'].replace(['', 'nan', 'NaN', 'None'], pd.NA)
+            
+            # Normalize employee names to merge variations
+            df['Employee'] = df['Employee'].apply(normalize_employee_name)
         
         # Extract time components
         if 'Time' in df.columns:
             df['Time_Parsed'] = pd.to_datetime(df['Time'], errors='coerce')
             df['Hour'] = df['Time_Parsed'].dt.hour
+        
+        # Ensure Day of the Week column exists - calculate from Date if needed
+        if 'Day of the Week' not in df.columns or df['Day of the Week'].isna().all():
+            if 'Date' in df.columns and df['Date'].notna().any():
+                df['Day of the Week'] = df['Date'].dt.day_name()
+        
+        # Also create Day_of_Week for compatibility
+        if 'Day of the Week' in df.columns:
             df['Day_of_Week'] = df['Day of the Week']
         
         return df
@@ -430,11 +520,38 @@ def main():
     # Refresh data button
     if st.sidebar.button("🔄 Refresh Data", help="Click to reload data from CSV files (useful after adding new data)"):
         st.cache_data.clear()
+        st.success("✅ Cache cleared! Reloading data...")
         st.rerun()
+    
+    # Debug section for refunds (temporary - can be removed after fixing)
+    with st.sidebar.expander("🔍 Debug: Refund Data Check", expanded=False):
+        if sales_df is not None and len(sales_df) > 0:
+            if 'Refunds' in sales_df.columns:
+                raw_refunds_sum = sales_df['Refunds'].sum()
+                refunds_nonzero_count = len(sales_df[sales_df['Refunds'] != 0])
+                refunds_sample = sales_df[sales_df['Refunds'] != 0]['Refunds'].head(3).tolist()
+                st.write(f"**Total rows:** {len(sales_df)}")
+                st.write(f"**Rows with non-zero refunds:** {refunds_nonzero_count}")
+                st.write(f"**Raw refund sum:** {raw_refunds_sum:.2f}")
+                st.write(f"**Sample refund values:** {refunds_sample}")
+                st.write(f"**Refund column dtype:** {sales_df['Refunds'].dtype}")
+            else:
+                st.write("❌ 'Refunds' column not found in data")
+        else:
+            st.write("❌ No sales data loaded")
     
     st.sidebar.caption("💡 **Tip:** After adding new data to CSV files, click 'Refresh Data' to see updates")
     
-    all_employees = ['All'] + sorted(sales_df['Employee'].dropna().unique().tolist())
+    # Get unique employees, ensuring they're cleaned strings
+    if 'Employee' in sales_df.columns:
+        unique_employees = sales_df['Employee'].dropna().unique()
+        # Convert to string, strip, and filter out empty/NaN
+        unique_employees = [str(emp).strip() for emp in unique_employees if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
+        unique_employees = sorted(list(set(unique_employees)))  # Remove duplicates and sort
+    else:
+        unique_employees = []
+    
+    all_employees = ['All'] + unique_employees
     selected_employee = st.sidebar.selectbox("Select Employee", all_employees)
     
     if sales_df['Date'].notna().any():
@@ -498,13 +615,74 @@ def main():
         st.sidebar.caption(f"📆 {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}")
     else:
         filtered_sales = sales_df
+        # Set default dates if no date data
+        start_date = None
+        end_date = None
     
     if selected_employee != 'All':
-        filtered_sales = filtered_sales[filtered_sales['Employee'] == selected_employee]
+        # More flexible employee matching - handle case and whitespace variations
+        # Clean employee names for comparison
+        if 'Employee' in filtered_sales.columns:
+            # First try exact match (with stripped whitespace)
+            employee_mask = filtered_sales['Employee'].astype(str).str.strip() == selected_employee.strip()
+            
+            # If no exact match, try case-insensitive
+            if not employee_mask.any():
+                employee_mask = filtered_sales['Employee'].astype(str).str.strip().str.lower() == selected_employee.strip().lower()
+            
+            filtered_sales = filtered_sales[employee_mask].copy()
+            
+            # Ensure Day of Week column is available in filtered data
+            if 'Day of the Week' not in filtered_sales.columns and 'Date' in filtered_sales.columns:
+                filtered_sales['Day of the Week'] = filtered_sales['Date'].dt.day_name()
+            
+            # Debug info if no data found
+            if len(filtered_sales) == 0:
+                # Check what we have before employee filtering
+                if start_date is not None and end_date is not None:
+                    date_filtered = sales_df[
+                        (sales_df['Date'].dt.date >= start_date) & 
+                        (sales_df['Date'].dt.date <= end_date)
+                    ]
+                    before_filter_count = len(date_filtered)
+                    employees_in_range = date_filtered['Employee'].dropna().unique()
+                else:
+                    before_filter_count = len(sales_df)
+                    employees_in_range = sales_df['Employee'].dropna().unique()
+                
+                # Check if employee exists at all
+                all_employees = sales_df['Employee'].dropna().unique()
+                employee_exists = any(
+                    str(emp).strip().lower() == selected_employee.strip().lower() 
+                    for emp in all_employees
+                )
+                
+                if employee_exists:
+                    st.sidebar.warning(f"⚠️ '{selected_employee}' exists in data but has no transactions in the selected date range.")
+                else:
+                    st.sidebar.warning(f"⚠️ '{selected_employee}' not found in data. Check spelling or try a different employee.")
+        else:
+            st.error("Employee column not found in data!")
+            filtered_sales = pd.DataFrame()  # Empty DataFrame
     
     # Employee-specific header
-    if selected_employee != 'All' and len(filtered_sales) > 0:
-        st.info(f"👤 **Viewing analytics for: {selected_employee}** | 📅 **Date Range:** {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')} | 📊 **{len(filtered_sales):,} transactions**")
+    if selected_employee != 'All':
+        if len(filtered_sales) > 0:
+            date_range_str = f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if start_date and end_date else "All dates"
+            st.info(f"👤 **Viewing analytics for: {selected_employee}** | 📅 **Date Range:** {date_range_str} | 📊 **{len(filtered_sales):,} transactions**")
+        else:
+            date_range_str = f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if start_date and end_date else "All dates"
+            st.warning(f"⚠️ **No data found for: {selected_employee}** | 📅 **Date Range:** {date_range_str}")
+            # Show available employees for debugging
+            with st.expander("🔍 Debug: Available Employees"):
+                all_employees_list = sorted(sales_df['Employee'].dropna().unique().tolist())
+                st.write(f"**Total employees in data:** {len(all_employees_list)}")
+                st.write("**First 20 employees:**")
+                for emp in all_employees_list[:20]:
+                    count = len(sales_df[sales_df['Employee'] == emp])
+                    st.write(f"- {emp} ({count} transactions)")
+                if len(all_employees_list) > 20:
+                    st.write(f"... and {len(all_employees_list) - 20} more")
     
     # Information about adding new data
     with st.sidebar.expander("ℹ️ Adding New Data"):
@@ -542,7 +720,30 @@ def main():
     total_gross_sales = filtered_sales['Gross_Sales'].sum()
     total_transactions = len(filtered_sales)
     avg_transaction = total_net_sales / total_transactions if total_transactions > 0 else 0
-    total_refunds = abs(filtered_sales['Refunds'].sum())
+    
+    # Calculate refunds - ensure column exists and handle properly
+    if 'Refunds' in filtered_sales.columns:
+        # Sum refunds (they're negative values, so we take absolute value for display)
+        refunds_sum = filtered_sales['Refunds'].sum()
+        total_refunds = abs(refunds_sum) if pd.notna(refunds_sum) else 0
+        
+        # Debug: Check if refunds are actually numeric
+        refunds_nonzero = filtered_sales[filtered_sales['Refunds'] != 0]
+        if len(refunds_nonzero) > 0:
+            # Verify refunds are numeric
+            refunds_sample = refunds_nonzero['Refunds'].head(5)
+            refunds_types = [type(x).__name__ for x in refunds_sample]
+            if 'str' in refunds_types:
+                # Refunds are still strings - need to clean them again
+                st.warning("⚠️ Refunds column contains strings. Re-cleaning refunds...")
+                filtered_sales['Refunds'] = filtered_sales['Refunds'].apply(
+                    lambda x: float(re.sub(r'[^\d.-]', '', str(x).strip())) if pd.notna(x) and str(x).strip() not in ['', '-', 'nan'] else 0
+                )
+                refunds_sum = filtered_sales['Refunds'].sum()
+                total_refunds = abs(refunds_sum) if pd.notna(refunds_sum) else 0
+    else:
+        total_refunds = 0
+    
     unique_employees = filtered_sales['Employee'].nunique()
     
     # Calculate comparison metrics if employee is selected
@@ -557,7 +758,7 @@ def main():
         all_total_sales = comparison_sales['Net_Sales'].sum()
         employee_share = (total_net_sales / all_total_sales * 100) if all_total_sales > 0 else 0
         
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
         
         with col1:
             delta = total_net_sales - (all_total_sales / comparison_sales['Employee'].nunique()) if comparison_sales['Employee'].nunique() > 0 else None
@@ -572,9 +773,11 @@ def main():
             delta_str = f"£{delta:,.2f} vs avg" if delta is not None and delta != 0 else None
             st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", delta=delta_str)
         with col5:
+            st.metric("Total Refunds", f"£{total_refunds:,.2f}")
+        with col6:
             refund_rate = (total_refunds / total_gross_sales * 100) if total_gross_sales > 0 else 0
             st.metric("Refund Rate", f"{refund_rate:.2f}%")
-        with col6:
+        with col7:
             # Days worked in period
             days_worked = filtered_sales['Date'].nunique()
             st.metric("Days Active", f"{days_worked}")
@@ -616,6 +819,16 @@ def main():
             st.metric("Total Refunds", f"£{total_refunds:,.2f}")
         with col6:
             st.metric("Active Employees", f"{unique_employees}")
+        
+        # Debug: Show refund statistics if refunds are 0 but should exist
+        if total_refunds == 0 and 'Refunds' in filtered_sales.columns:
+            refunds_nonzero = filtered_sales[filtered_sales['Refunds'] != 0]
+            if len(refunds_nonzero) > 0:
+                with st.expander("🔍 Debug: Refund Data Check"):
+                    st.write(f"**Found {len(refunds_nonzero)} rows with non-zero refunds**")
+                    st.write(f"**Raw refund sum:** {filtered_sales['Refunds'].sum():.2f}")
+                    st.write(f"**Sample refund values:** {refunds_nonzero['Refunds'].head(10).tolist()}")
+                    st.write("**Note:** If refunds show 0 but you see data here, try clicking '🔄 Refresh Data' in the sidebar to clear the cache.")
     
     st.divider()
     
@@ -657,6 +870,7 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
+            title = f'Moving Averages - {selected_employee}' if selected_employee != 'All' else 'Moving Averages'
             st.subheader("7-Day Moving Average")
             daily_sales['Moving_Avg_7'] = daily_sales['Net_Sales'].rolling(window=7, min_periods=1).mean()
             daily_sales['Moving_Avg_30'] = daily_sales['Net_Sales'].rolling(window=30, min_periods=1).mean()
@@ -684,7 +898,7 @@ def main():
                 line=dict(width=2)
             ))
             fig.update_layout(
-                title='Moving Averages',
+                title=title,
                 xaxis_title='Date',
                 yaxis_title='Net Sales (£)',
                 height=400
@@ -695,12 +909,18 @@ def main():
         
         with col1:
             st.subheader("Daily Statistics")
-            st.write(f"**Average Daily Sales:** £{daily_sales['Net_Sales'].mean():,.2f}")
-            st.write(f"**Best Day:** {daily_sales.loc[daily_sales['Net_Sales'].idxmax(), 'Date'].strftime('%Y-%m-%d')} - £{daily_sales['Net_Sales'].max():,.2f}")
-            st.write(f"**Worst Day:** {daily_sales.loc[daily_sales['Net_Sales'].idxmin(), 'Date'].strftime('%Y-%m-%d')} - £{daily_sales['Net_Sales'].min():,.2f}")
-            st.write(f"**Standard Deviation:** £{daily_sales['Net_Sales'].std():,.2f}")
+            if len(daily_sales) > 0:
+                st.write(f"**Average Daily Sales:** £{daily_sales['Net_Sales'].mean():,.2f}")
+                best_day_idx = daily_sales['Net_Sales'].idxmax()
+                worst_day_idx = daily_sales['Net_Sales'].idxmin()
+                st.write(f"**Best Day:** {daily_sales.loc[best_day_idx, 'Date'].strftime('%Y-%m-%d')} - £{daily_sales.loc[best_day_idx, 'Net_Sales']:,.2f}")
+                st.write(f"**Worst Day:** {daily_sales.loc[worst_day_idx, 'Date'].strftime('%Y-%m-%d')} - £{daily_sales.loc[worst_day_idx, 'Net_Sales']:,.2f}")
+                st.write(f"**Standard Deviation:** £{daily_sales['Net_Sales'].std():,.2f}")
+            else:
+                st.info("No data available for the selected filters.")
         
         with col2:
+            title = f'Monthly Comparison - {selected_employee}' if selected_employee != 'All' else 'Monthly Sales Comparison'
             st.subheader("Monthly Comparison")
             monthly_comparison = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M'))['Net_Sales'].sum()
             monthly_comparison.index = monthly_comparison.index.astype(str)
@@ -709,7 +929,7 @@ def main():
                 x=monthly_comparison.index,
                 y=monthly_comparison.values,
                 labels={'x': 'Month', 'y': 'Net Sales (£)'},
-                title='Monthly Sales Comparison'
+                title=title
             )
             fig.update_layout(height=300)
             st.plotly_chart(fig, use_container_width=True)
@@ -721,7 +941,10 @@ def main():
         else:
             st.header("📆 Day of Week Analysis")
         
-        if day_of_week_df is not None:
+        # Use pre-aggregated data only if viewing all employees AND data exists
+        # Otherwise, always calculate from filtered_sales to show employee-specific patterns
+        if selected_employee == 'All' and day_of_week_df is not None:
+            # Use pre-aggregated data when viewing all employees
             col1, col2 = st.columns(2)
             
             with col1:
@@ -776,20 +999,123 @@ def main():
                 display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
         else:
-            # Fallback to calculated data
-            st.subheader("Sales by Day of Week")
-            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            day_sales = filtered_sales.groupby('Day of the Week')['Net_Sales'].agg(['sum', 'mean', 'count'])
-            day_sales = day_sales.reindex([d for d in day_order if d in day_sales.index])
-            
-            fig = px.bar(
-                x=day_sales.index,
-                y=day_sales['sum'],
-                labels={'x': 'Day of Week', 'y': 'Total Net Sales (£)'},
-                title='Total Sales by Day of Week'
-            )
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            # Calculate from filtered data (supports employee filtering)
+            if len(filtered_sales) == 0:
+                st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
+            else:
+                # Make a copy to work with
+                work_df = filtered_sales.copy()
+                
+                # Ensure Day of Week column exists - calculate from Date if needed
+                if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
+                    if 'Date' in work_df.columns and work_df['Date'].notna().any():
+                        work_df['Day of the Week'] = work_df['Date'].dt.day_name()
+                    else:
+                        st.error("No date data available to calculate day of week.")
+                        st.stop()
+                
+                day_col = 'Day of the Week'
+                
+                # Filter out rows with null day of week
+                valid_sales = work_df[work_df[day_col].notna()].copy()
+                
+                if len(valid_sales) > 0:
+                    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    
+                    # Group by day of week
+                    day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
+                    day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
+                    
+                    # Get gross sales
+                    gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
+                    gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
+                    day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
+                    day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
+                    
+                    # Reindex to ensure all days are in order and fill missing days
+                    day_sales = day_sales.set_index('Day')
+                    for day in day_order:
+                        if day not in day_sales.index:
+                            day_sales.loc[day] = [0, 0, 0, 0, 0]
+                    
+                    day_sales = day_sales.reindex(day_order)
+                    
+                    # Reset index to make Day a column for easier plotting
+                    day_sales_plot = day_sales.reset_index()
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
+                        st.subheader("Sales by Day of Week")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Net_Sales_Sum',
+                            labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Day': 'Day of Week'},
+                            color='Net_Sales_Sum',
+                            color_continuous_scale='Blues',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
+                        st.subheader("Average Transaction by Day")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Net_Sales_Mean',
+                            labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
+                            color='Net_Sales_Mean',
+                            color_continuous_scale='Greens',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
+                        st.subheader("Transaction Count by Day")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Transaction_Count',
+                            labels={'Transaction_Count': 'Number of Transactions', 'Day': 'Day of Week'},
+                            color='Transaction_Count',
+                            color_continuous_scale='Oranges',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("Day of Week Summary Table")
+                        display_df = day_sales_plot.copy()
+                        display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
+                        display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
+                        display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                else:
+                    st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
     # TAB 3: Employee Performance
     with tab3:
@@ -1121,63 +1447,222 @@ def main():
         else:
             st.header("🛍️ Product Patterns Analysis")
         
-        if product_df is not None:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Top 20 Products by Sales Volume")
-                top_products = product_df.nlargest(20, 'Total_Sales')
-                fig = px.bar(
-                    top_products,
-                    x='Total_Sales',
-                    y='Product',
-                    orientation='h',
-                    labels={'Total_Sales': 'Total Sales (£)'},
-                    color='Total_Sales',
-                    color_continuous_scale='Blues'
-                )
-                fig.update_layout(height=600, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.subheader("Top 20 Products by Transaction Count")
-                top_count = product_df.nlargest(20, 'Count')
-                fig = px.bar(
-                    top_count,
-                    x='Count',
-                    y='Product',
-                    orientation='h',
-                    labels={'Count': 'Number of Transactions'},
-                    color='Count',
-                    color_continuous_scale='Greens'
-                )
-                fig.update_layout(height=600, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Top Products by Average Sale Value")
-                top_avg = product_df[product_df['Count'] >= 5].nlargest(20, 'Avg_Sale')
-                fig = px.bar(
-                    top_avg,
-                    x='Avg_Sale',
-                    y='Product',
-                    orientation='h',
-                    labels={'Avg_Sale': 'Average Sale (£)'},
-                    color='Avg_Sale',
-                    color_continuous_scale='Oranges'
-                )
-                fig.update_layout(height=600, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                st.subheader("Product Performance Summary")
-                display_df = product_df.nlargest(30, 'Total_Sales')[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
-                display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
-                display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
-                display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
-                st.dataframe(display_df, use_container_width=True, hide_index=True, height=600)
+        # Use pre-aggregated data only if no employee filter is applied
+        # Otherwise, calculate from filtered_sales to show employee-specific patterns
+        if selected_employee != 'All' or product_df is None:
+            # Calculate from filtered data (supports employee filtering)
+            if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
+                # Extract product sales from filtered data
+                product_sales_dict = {}
+                product_count_dict = {}
+                product_amounts_dict = {}
+                
+                for idx, row in filtered_sales.iterrows():
+                    products = row['Products']
+                    sale_amount = row['Net_Sales']
+                    
+                    if pd.notna(products) and isinstance(products, str):
+                        # Split by comma and process each product
+                        items = [i.strip() for i in products.split(',') if i.strip()]
+                        num_items = len([i for i in items if 'x' in i and not i.startswith('-')])
+                        
+                        for item in items:
+                            item = item.strip()
+                            # Skip refunds (negative items)
+                            if item.startswith('-') or 'x-' in item:
+                                continue
+                                
+                            if 'x' in item:
+                                try:
+                                    # Format: "Product Name 1x135.00" or "Product Name 1x£135.00"
+                                    # Pattern: [Product Name] [quantity]x[price]
+                                    # Use regex to match: text, optional space, number, 'x', price
+                                    pattern = r'^(.+?)\s+(\d+)x([\d.,£]+)$'
+                                    match = re.match(pattern, item)
+                                    
+                                    if match:
+                                        product_name = match.group(1).strip()
+                                        quantity = int(match.group(2))
+                                        price_str = match.group(3).strip()
+                                        
+                                        # Clean and parse price
+                                        price_clean = price_str.replace('£', '').replace(',', '').strip()
+                                        price_match = re.search(r'(\d+\.?\d*)', price_clean)
+                                        if price_match:
+                                            price = float(price_match.group(1))
+                                            # Sanity check: reasonable price range
+                                            if price <= 0 or price > 50000:  # Max £50k per item
+                                                continue
+                                        else:
+                                            continue
+                                        
+                                        if product_name and len(product_name) > 0:
+                                            # Price is already the total for this line item
+                                            if product_name not in product_sales_dict:
+                                                product_sales_dict[product_name] = 0
+                                                product_count_dict[product_name] = 0
+                                            
+                                            product_sales_dict[product_name] += price
+                                            product_count_dict[product_name] += quantity
+                                    else:
+                                        # Fallback: try simpler pattern or skip
+                                        # If we can't parse, skip this item to avoid incorrect data
+                                        continue
+                                        
+                                except Exception as e:
+                                    # Skip items that fail to parse
+                                    continue
+                
+                # Create DataFrame from calculated data
+                if product_sales_dict:
+                    product_data = []
+                    for product, total_sales in product_sales_dict.items():
+                        count = product_count_dict.get(product, 0)
+                        avg_sale = total_sales / count if count > 0 else 0
+                        product_data.append({
+                            'Product': product,
+                            'Total_Sales': total_sales,
+                            'Count': count,
+                            'Avg_Sale': avg_sale
+                        })
+                    
+                    product_df_filtered = pd.DataFrame(product_data)
+                    product_df_filtered = product_df_filtered[product_df_filtered['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Top Products by Sales - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Sales Volume'
+                        st.subheader("Top Products by Sales Volume")
+                        top_products = product_df_filtered.head(20)
+                        if len(top_products) > 0:
+                            fig = px.bar(
+                                top_products,
+                                x='Total_Sales',
+                                y='Product',
+                                orientation='h',
+                                labels={'Total_Sales': 'Total Sales (£)'},
+                                color='Total_Sales',
+                                color_continuous_scale='Blues',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False)
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    with col2:
+                        title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
+                        st.subheader("Top Products by Transaction Count")
+                        top_count = product_df_filtered.nlargest(20, 'Count')
+                        if len(top_count) > 0:
+                            fig = px.bar(
+                                top_count,
+                                x='Count',
+                                y='Product',
+                                orientation='h',
+                                labels={'Count': 'Number of Transactions'},
+                                color='Count',
+                                color_continuous_scale='Greens',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False)
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
+                        st.subheader("Top Products by Average Sale Value")
+                        top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
+                        if len(top_avg) > 0:
+                            fig = px.bar(
+                                top_avg,
+                                x='Avg_Sale',
+                                y='Product',
+                                orientation='h',
+                                labels={'Avg_Sale': 'Average Sale (£)'},
+                                color='Avg_Sale',
+                                color_continuous_scale='Oranges',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False)
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    with col2:
+                        st.subheader("Product Performance Summary")
+                        display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                        display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
+                        display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
+                        st.dataframe(display_df, use_container_width=True, height=600)
+                else:
+                    st.info("No product data available in the filtered data.")
+            else:
+                st.info("Product data not available in the sales data.")
+        else:
+            # Use pre-aggregated data when viewing all employees
+            if product_df is not None:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Top 20 Products by Sales Volume")
+                    top_products = product_df.nlargest(20, 'Total_Sales')
+                    fig = px.bar(
+                        top_products,
+                        x='Total_Sales',
+                        y='Product',
+                        orientation='h',
+                        labels={'Total_Sales': 'Total Sales (£)'},
+                        color='Total_Sales',
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Top 20 Products by Transaction Count")
+                    top_count = product_df.nlargest(20, 'Count')
+                    fig = px.bar(
+                        top_count,
+                        x='Count',
+                        y='Product',
+                        orientation='h',
+                        labels={'Count': 'Number of Transactions'},
+                        color='Count',
+                        color_continuous_scale='Greens'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Top Products by Average Sale Value")
+                    top_avg = product_df[product_df['Count'] >= 5].nlargest(20, 'Avg_Sale')
+                    fig = px.bar(
+                        top_avg,
+                        x='Avg_Sale',
+                        y='Product',
+                        orientation='h',
+                        labels={'Avg_Sale': 'Average Sale (£)'},
+                        color='Avg_Sale',
+                        color_continuous_scale='Oranges'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    st.subheader("Product Performance Summary")
+                    display_df = product_df.nlargest(30, 'Total_Sales')[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                    display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
+                    display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
+                    display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=600)
     
     # TAB 6: Future Projections
     with tab6:
@@ -1274,8 +1759,9 @@ def main():
                 annotation_position="right"
             )
             
+            forecast_title = f'Daily Sales Forecast ({forecast_days} days) - {selected_employee} - {method_name}' if selected_employee != 'All' else f'Daily Sales Forecast ({forecast_days} days) - {method_name}'
             fig.update_layout(
-                title=f'Daily Sales Forecast ({forecast_days} days) - {method_name}',
+                title=forecast_title,
                 xaxis_title='Date',
                 yaxis_title='Net Sales (£)',
                 height=500,
@@ -1343,8 +1829,9 @@ def main():
                 annotation_position="right"
             )
             
+            forecast_title = f'Monthly Sales Forecast ({forecast_months} months) - {selected_employee} - {method_name}' if selected_employee != 'All' else f'Monthly Sales Forecast ({forecast_months} months) - {method_name}'
             fig.update_layout(
-                title=f'Monthly Sales Forecast ({forecast_months} months) - {method_name}',
+                title=forecast_title,
                 xaxis_title='Month',
                 yaxis_title='Net Sales (£)',
                 height=500,
