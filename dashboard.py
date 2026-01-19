@@ -770,8 +770,22 @@ def main():
             st.metric("Total Transactions", f"{total_transactions:,}")
         with col4:
             delta = avg_transaction - all_avg_transaction if all_avg_transaction > 0 else None
-            delta_str = f"£{delta:,.2f} vs avg" if delta is not None and delta != 0 else None
-            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", delta=delta_str)
+            if delta is not None and delta != 0:
+                # Format delta string with sign at the very beginning for proper parsing
+                # Streamlit needs to see the negative sign first to determine arrow direction
+                if delta < 0:
+                    delta_str = f"-£{abs(delta):,.2f} vs avg"
+                else:
+                    delta_str = f"+£{delta:,.2f} vs avg"
+                # Use "normal" for standard colors: positive=green, negative=red
+                delta_color = "normal"
+                help_text = f"Compared to average transaction value of £{all_avg_transaction:,.2f}"
+            else:
+                delta_str = None
+                delta_color = None
+                help_text = "Average transaction value"
+            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", 
+                     delta=delta_str, delta_color=delta_color, help=help_text)
         with col5:
             st.metric("Total Refunds", f"£{total_refunds:,.2f}")
         with col6:
