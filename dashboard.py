@@ -3,46 +3,67 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from pathlib import Path
 import numpy as np
 from scipy import stats
 import warnings
 import os
 import re
+import json
 warnings.filterwarnings('ignore')
+
+# Employee status - stored in Supabase (with local JSON fallback when Supabase unavailable)
+EMPLOYEE_STATUS_FILE = 'employee_status.json'
+
+# Load .env file so SUPABASE_URL and SUPABASE_KEY are available
+from dotenv import load_dotenv
+# Load from script directory and cwd (works when run from project root or Streamlit)
+load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 # Employee name normalization mapping
 # Add known variations here - format: "variant_name": "canonical_name"
+# These apply to data from Supabase and local CSV
 EMPLOYEE_NAME_MAPPING = {
+    # Duaa variants
     "Duaaz": "Duaa Zainab",
     "Duaa": "Duaa Zainab",
-    # Add more mappings as needed
-    # "John D": "John Doe",
-    # "JD": "John Doe",
+    "DuaaZ": "Duaa Zainab",
+    # From normalize_names.py (typos, order, shorthand)
+    "Bir_ra Thanvi": "Bir-ra Thanvi",
+    "Bir-ra B": "Bir-ra Thanvi",
+    "Molly ": "Molly Tasheva",  # trailing space variant
+    "Leonard Masie": "Leonard Maisie",
+    "Nicorescu Codruta": "Codruta Nicorescu",
+    # Duplicate/typo variants seen in data
+    "Durbala Edmond1": "Durbala Edmond",
+    # Add more as you discover them - check Debug: Data & Columns for unique names
 }
 
 def normalize_employee_name(name):
     """
     Normalize employee names to handle variations.
-    Uses manual mapping first, then applies normalization rules.
+    Uses manual mapping first (exact + case-insensitive), then applies normalization rules.
     """
     if pd.isna(name) or name == '':
         return name
-    
+
     name_str = str(name).strip()
-    
-    # Check manual mapping first
+    # Collapse multiple spaces
+    name_str = ' '.join(name_str.split())
+    if not name_str:
+        return name
+
+    # Check manual mapping first (exact match)
     if name_str in EMPLOYEE_NAME_MAPPING:
         return EMPLOYEE_NAME_MAPPING[name_str]
-    
-    # Normalize: remove extra spaces, convert to title case
-    normalized = ' '.join(name_str.split())
-    
-    # Check if normalized version exists in mapping (case-insensitive)
+
+    # Case-insensitive match (e.g. "Duaaz" vs "duaaz")
     for variant, canonical in EMPLOYEE_NAME_MAPPING.items():
-        if variant.lower() == normalized.lower():
+        if variant.strip().lower() == name_str.lower():
             return canonical
-    
-    return normalized
+
+    return name_str
 
 def find_similar_employee_names(df):
     """
@@ -69,12 +90,80 @@ def find_similar_employee_names(df):
     
     return duplicates
 
-# Try to import Airtable (optional)
-try:
-    from pyairtable import Api
-    AIRTABLE_AVAILABLE = True
-except ImportError:
-    AIRTABLE_AVAILABLE = False
+
+def _employee_status_path():
+    """Path to employee status JSON file (fallback when Supabase unavailable)."""
+    return Path(__file__).resolve().parent / EMPLOYEE_STATUS_FILE
+
+
+def _load_employee_status_from_json():
+    """Load employee status from local JSON file."""
+    path = _employee_status_path()
+    if path.exists():
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+def load_employee_status():
+    """Load employee active/inactive status from Supabase, or local JSON fallback. Returns dict {employee_name: 'active'|'inactive'}."""
+    # Try Supabase first when configured
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            from supabase import create_client
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            response = supabase.table(SUPABASE_TABLE_EMPLOYEE_STATUS).select('employee_name, status').execute()
+            if response.data:
+                return {row['employee_name']: row['status'] for row in response.data}
+        except Exception:
+            pass
+    return _load_employee_status_from_json()
+
+
+def save_employee_status(status_dict):
+    """Save employee status to Supabase, or local JSON fallback. Returns True on success."""
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            from supabase import create_client
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            rows = [{'employee_name': k, 'status': v} for k, v in status_dict.items()]
+            supabase.table(SUPABASE_TABLE_EMPLOYEE_STATUS).upsert(rows, on_conflict='employee_name').execute()
+            return True
+        except Exception:
+            pass
+    # Fallback to local JSON
+    path = _employee_status_path()
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(status_dict, f, indent=2)
+        return True
+    except IOError:
+        return False
+
+
+def is_employee_active(employee_name, status_dict):
+    """Return True if employee is active (default True when not in dict)."""
+    return status_dict.get(str(employee_name).strip(), 'active').lower() == 'active'
+
+
+# Supabase configuration - supports st.secrets (Streamlit Cloud) and os.getenv (local)
+def _get_secret_or_env(key, default=''):
+    """Get config from st.secrets (Streamlit Cloud) or os.getenv (local)."""
+    try:
+        val = st.secrets[key]
+        return val if val else os.getenv(key, default)
+    except (KeyError, AttributeError, FileNotFoundError, TypeError):
+        return os.getenv(key, default)
+
+
+SUPABASE_URL = _get_secret_or_env('SUPABASE_URL', '')
+SUPABASE_KEY = _get_secret_or_env('SUPABASE_KEY', '')
+SUPABASE_TABLE_PYT = _get_secret_or_env('SUPABASE_TABLE_PYT', 'PYT Sales Data')
+SUPABASE_TABLE_OPATRA = _get_secret_or_env('SUPABASE_TABLE_OPATRA', 'Opatra Sales Data')
+SUPABASE_TABLE_EMPLOYEE_STATUS = _get_secret_or_env('SUPABASE_TABLE_EMPLOYEE_STATUS', 'employee_status')
 
 # Page configuration
 st.set_page_config(
@@ -84,157 +173,603 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
-st.markdown("""
+# Chart theme - unified palette matching dashboard gradient
+CHART_COLORWAY = ["#667eea", "#764ba2", "#f093fb", "#4facfe", "#43e97b", "#fa709a"]
+CHART_THEME = dict(
+    template="plotly_white",
+    font=dict(family="Inter, system-ui, sans-serif", size=12),
+    colorway=CHART_COLORWAY,
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    margin=dict(t=50, b=50, l=50, r=50),
+    hovermode="x unified",
+)
+CHART_CONFIG = {"displayModeBar": True, "displaylogo": False, "toImageButtonOptions": {"format": "png", "filename": "chart"}}
+
+def apply_chart_theme(fig, dark=False):
+    """Apply unified theme to Plotly figure."""
+    fig.update_layout(**CHART_THEME)
+    if dark:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#e0e0e0"),
+            xaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)"),
+        )
+    return fig
+
+def render_chart(fig, dark=False, height=None):
+    """Render Plotly chart with theme and download support."""
+    fig = apply_chart_theme(fig, dark)
+    if height:
+        fig.update_layout(height=height)
+    st.plotly_chart(fig, use_container_width=True, config=CHART_CONFIG)
+
+# Custom CSS - applied dynamically based on dark mode
+def inject_css(dark_mode=False):
+    bg = "#0e1117" if dark_mode else "#ffffff"
+    card_bg = "#1e2130" if dark_mode else "#f8f9fa"
+    text = "#fafafa" if dark_mode else "#31333f"
+    border = "rgba(102, 126, 234, 0.3)" if dark_mode else "rgba(102, 126, 234, 0.2)"
+    # Dark mode: override Streamlit's main containers (target .stApp root for full coverage)
+    dark_overrides = ""
+    if dark_mode:
+        dark_overrides = """
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] main, [data-testid="stAppViewContainer"] .block-container {
+        background-color: #0e1117 !important;
+    }
+    section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {
+        background-color: #0e1117 !important;
+    }
+    .stApp h1, .stApp h2, .stApp h3, .stApp p, .stApp span, .stApp label, .stApp .stMarkdown, .stApp [data-testid="stMetricValue"], .stApp [data-testid="stMetricLabel"] {
+        color: #fafafa !important;
+    }
+    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] .stCaption {
+        color: #fafafa !important;
+    }
+    .stApp [data-testid="stMetric"] {
+        background-color: #1e2130 !important;
+        border-color: rgba(102, 126, 234, 0.3) !important;
+    }
+    .stApp .stTabs [data-baseweb="tab"][aria-selected="false"], .stApp .stTabs [role="tab"][aria-selected="false"] {
+        background: #1e2130 !important;
+        color: #fafafa !important;
+    }
+    .stApp .stTabs [data-baseweb="tab"][aria-selected="false"]:hover, .stApp .stTabs [role="tab"][aria-selected="false"]:hover {
+        background: #2d3142 !important;
+    }
+    .stApp .stExpander {
+        background-color: #1e2130 !important;
+        border-color: rgba(102, 126, 234, 0.3) !important;
+    }
+    .stApp .stDataFrame, .stApp [data-testid="stDataFrame"] {
+        background-color: #1e2130 !important;
+    }
+    .stApp .stCaption {
+        color: #b0b0b0 !important;
+    }
+    .stApp {
+        color-scheme: dark;
+    }
+    """
+    st.markdown(f"""
     <style>
-    .main-header {
+    :root {{
+        --bg: {bg};
+        --card-bg: {card_bg};
+        --text: {text};
+        --border: {border};
+    }}
+    {dark_overrides}
+    .main-header {{
         font-size: 3rem;
         font-weight: bold;
         text-align: center;
         color: #667eea;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
+        margin-bottom: 0.5rem;
+    }}
+    .filter-summary {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px 16px;
+        margin-bottom: 1.5rem;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
+        border-radius: 10px;
+        border: 1px solid {border};
+        font-size: 0.9rem;
+    }}
+    .filter-badge {{
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: 500;
+    }}
+    .metric-card {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1.5rem;
         border-radius: 10px;
         color: white;
         text-align: center;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2px;
-    }
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.25);
+        border: 1px solid rgba(255,255,255,0.1);
+    }}
+    .metric-card-wrapper {{
+        padding: 0.5rem;
+        background: var(--card-bg);
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        margin-bottom: 0.5rem;
+    }}
+    [data-testid="stSidebar"] > div:first-child {{
+        position: sticky;
+        top: 0;
+        max-height: 100vh;
+        overflow-y: auto;
+    }}
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 10px;
+        padding: 0.75rem 0;
+    }}
+    .stTabs [data-baseweb="tab"],
+    .stTabs [role="tab"] {{
+        font-size: 1.15rem !important;
+        font-weight: 600 !important;
+        padding: 0.85rem 1.75rem !important;
+        border-radius: 10px;
+    }}
+    .stTabs [data-baseweb="tab"][aria-selected="true"],
+    .stTabs [role="tab"][aria-selected="true"] {{
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: white !important;
+    }}
+    .stTabs [data-baseweb="tab"][aria-selected="false"],
+    .stTabs [role="tab"][aria-selected="false"] {{
+        background: #f0f2f6 !important;
+        color: #31333f !important;
+    }}
+    .stTabs [data-baseweb="tab"][aria-selected="false"]:hover,
+    .stTabs [role="tab"][aria-selected="false"]:hover {{
+        background: #e0e4eb !important;
+    }}
+    .empty-state {{
+        text-align: center;
+        padding: 3rem 2rem;
+        background: var(--card-bg);
+        border-radius: 12px;
+        border: 2px dashed var(--border);
+        color: var(--text);
+        margin: 2rem 0;
+    }}
+    .empty-state-icon {{
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        opacity: 0.6;
+    }}
+    [data-testid="stMetric"] {{
+        background: var(--card-bg);
+        padding: 1rem;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }}
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+def _compute_employee_performance_from_sales(sales_df):
+    """Compute employee performance metrics from sales transaction data."""
+    if sales_df is None or len(sales_df) == 0 or 'Employee' not in sales_df.columns:
+        return None
+    agg = sales_df.groupby('Employee').agg(
+        Net_Sales_Sum=('Net_Sales', 'sum'),
+        Net_Sales_Mean=('Net_Sales', 'mean'),
+        Transaction_Count=('Net_Sales', 'count'),
+        Gross_Sales_Sum=('Gross_Sales', 'sum'),
+        Refunds_Sum=('Refunds', 'sum'),
+    ).reset_index()
+    agg['Refunds_Sum'] = agg['Refunds_Sum'].abs()
+    agg['Refund_Rate'] = np.where(
+        agg['Gross_Sales_Sum'] > 0,
+        agg['Refunds_Sum'] / agg['Gross_Sales_Sum'] * 100,
+        0
+    )
+    return agg[agg['Employee'].notna() & (agg['Employee'] != '')]
+
+
+def _compute_day_of_week_from_sales(sales_df):
+    """Compute day-of-week analysis from sales transaction data."""
+    if sales_df is None or len(sales_df) == 0 or 'Date' not in sales_df.columns:
+        return None
+    df = sales_df.copy()
+    if 'Day of the Week' not in df.columns or df['Day of the Week'].isna().all():
+        df['Day of the Week'] = pd.to_datetime(df['Date'], errors='coerce').dt.day_name()
+    valid = df[df['Day of the Week'].notna()]
+    if len(valid) == 0:
+        return None
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    agg = valid.groupby('Day of the Week')['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
+    agg.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
+    gross = valid.groupby('Day of the Week')['Gross_Sales'].sum().reset_index()
+    gross.columns = ['Day', 'Gross_Sales_Sum']
+    agg = agg.merge(gross, on='Day', how='left')
+    agg['Gross_Sales_Sum'] = agg['Gross_Sales_Sum'].fillna(0)
+    for d in day_order:
+        if d not in agg['Day'].values:
+            agg = pd.concat([agg, pd.DataFrame([{'Day': d, 'Net_Sales_Sum': 0, 'Net_Sales_Mean': 0, 'Transaction_Count': 0, 'Net_Sales_Std': 0, 'Gross_Sales_Sum': 0}])], ignore_index=True)
+    agg = agg.set_index('Day').reindex(day_order).reset_index()
+    return agg
+
+
+def _compute_hourly_from_sales(sales_df):
+    """Compute hourly patterns from sales transaction data."""
+    if sales_df is None or len(sales_df) == 0 or 'Hour' not in sales_df.columns:
+        return None
+    valid = sales_df[sales_df['Hour'].notna()].copy()
+    valid['Hour'] = pd.to_numeric(valid['Hour'], errors='coerce')
+    valid = valid[valid['Hour'].notna() & (valid['Hour'] >= 0) & (valid['Hour'] <= 23)]
+    if len(valid) == 0:
+        return None
+    agg = valid.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+    agg.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
+    gross = valid.groupby('Hour')['Gross_Sales'].sum().reset_index()
+    gross.columns = ['Hour', 'Gross_Sales_Sum']
+    agg = agg.merge(gross, on='Hour', how='left')
+    agg['Gross_Sales_Sum'] = agg['Gross_Sales_Sum'].fillna(0)
+    return agg.sort_values('Hour')
+
+
+def _compute_product_from_sales(sales_df):
+    """Compute product patterns from sales transaction data (parses Products column)."""
+    if sales_df is None or len(sales_df) == 0 or 'Products' not in sales_df.columns:
+        return None
+    product_sales = {}
+    product_count = {}
+    for _, row in sales_df.iterrows():
+        products = row.get('Products')
+        if pd.notna(products) and isinstance(products, str):
+            for item in [i.strip() for i in products.split(',') if i.strip()]:
+                if item.startswith('-') or 'x-' in item:
+                    continue
+                if 'x' in item:
+                    m = re.match(r'^(.+?)\s+(\d+)x([\d.,£]+)$', item)
+                    if m:
+                        name, qty, price_str = m.group(1).strip(), int(m.group(2)), m.group(3)
+                        price_match = re.search(r'(\d+\.?\d*)', price_str.replace('£', '').replace(',', ''))
+                        if not price_match:
+                            continue
+                        price = float(price_match.group(1))
+                        if 0 < price <= 50000 and name:
+                            product_sales[name] = product_sales.get(name, 0) + price
+                            product_count[name] = product_count.get(name, 0) + qty
+    if not product_sales:
+        return None
+    rows = [{'Product': p, 'Total_Sales': product_sales[p], 'Count': product_count.get(p, 0),
+             'Avg_Sale': product_sales[p] / product_count.get(p, 1) if product_count.get(p, 0) else 0}
+            for p in product_sales]
+    df = pd.DataFrame(rows)
+    df = df[df['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
+    return df.reset_index(drop=True)
+
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
 def load_employee_data():
-    """Load employee performance data"""
-    try:
-        df = pd.read_csv('employee_performance_analysis.csv', skiprows=2)
-        df.columns = ['Employee', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 
-                     'Gross_Sales_Sum', 'Refunds_Sum', 'Refund_Rate']
-        df = df[df['Employee'].notna() & (df['Employee'] != '')]
-        numeric_cols = ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 
-                       'Gross_Sales_Sum', 'Refunds_Sum', 'Refund_Rate']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    except Exception as e:
-        st.error(f"Error loading employee data: {e}")
-        return None
-
-@st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
-def load_sales_data():
-    """Load sales transaction data - handles any date range and data size"""
-    try:
-        df = pd.read_csv('Opatra Sales from July 2023-Grid view.csv')
-        
-        def clean_currency(value):
-            if pd.isna(value):
-                return 0
-            if isinstance(value, str):
-                # Remove all non-numeric characters except minus sign and decimal point
-                # This handles £, special characters, commas, etc.
-                cleaned = re.sub(r'[^\d.-]', '', value.strip())
-                if cleaned == '' or cleaned == '-':
-                    return 0
-                try:
-                    return float(cleaned)
-                except ValueError:
-                    return 0
+    """Load employee performance data from file (if it exists)."""
+    for base in [Path(__file__).resolve().parent, Path.cwd()]:
+        path = base / 'employee_performance_analysis.csv'
+        if path.exists():
             try:
-                return float(value) if value else 0
-            except (ValueError, TypeError):
-                return 0
-        
-        df['Net_Sales'] = df['Net Sales'].apply(clean_currency)
-        df['Gross_Sales'] = df['Gross Sales'].apply(clean_currency)
-        df['Refunds'] = df['Refunds'].apply(clean_currency)
-        
-        # Try multiple date formats to handle different date formats
-        df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%Y', errors='coerce')
-        # If that fails, try other common formats
-        if df['Date'].isna().any():
-            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        
-        df = df[df['Date'].notna()]
-        # Keep rows with Net_Sales > 0 OR rows with refunds (refunds are separate transactions with Net_Sales <= 0)
-        df = df[(df['Net_Sales'] > 0) | (df['Refunds'] != 0)]
-        
-        # Ensure Employee column exists and clean it
-        if 'Employee' in df.columns:
-            # Convert to string and strip whitespace
-            df['Employee'] = df['Employee'].astype(str).str.strip()
-            # Replace empty strings and 'nan' with actual NaN
-            df['Employee'] = df['Employee'].replace(['', 'nan', 'NaN', 'None'], pd.NA)
-            
-            # Normalize employee names to merge variations
-            df['Employee'] = df['Employee'].apply(normalize_employee_name)
-        
-        # Extract time components
-        if 'Time' in df.columns:
-            df['Time_Parsed'] = pd.to_datetime(df['Time'], errors='coerce')
+                df = pd.read_csv(path, skiprows=2)
+                df.columns = ['Employee', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count',
+                             'Gross_Sales_Sum', 'Refunds_Sum', 'Refund_Rate']
+                df = df[df['Employee'].notna() & (df['Employee'] != '')]
+                for col in ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Gross_Sales_Sum', 'Refunds_Sum', 'Refund_Rate']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                return df
+            except Exception as e:
+                st.warning(f"Could not load employee_performance_analysis.csv: {e}")
+                break
+    return None
+
+def _clean_currency(value):
+    """Clean currency values to float"""
+    if pd.isna(value):
+        return 0
+    if isinstance(value, str):
+        cleaned = re.sub(r'[^\d.-]', '', value.strip())
+        if cleaned == '' or cleaned == '-':
+            return 0
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0
+    try:
+        return float(value) if value else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def _normalize_supabase_columns(df):
+    """Map Supabase column names to expected format (handles case variations from CSV import)"""
+    # Strip BOM and whitespace from column names
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    column_map = {}
+    for col in df.columns:
+        c = str(col).strip().lower()
+        if c in ('trans #', 'trans_num', 'transaction'):
+            column_map[col] = 'Transaction'
+        elif c in ('day of the week', 'day_of_the_week'):
+            column_map[col] = 'Day of the Week'
+        elif c == 'employee':
+            column_map[col] = 'Employee'
+        elif c == 'date':
+            column_map[col] = 'Date'
+        elif c in ('net sales', 'net_sales'):
+            column_map[col] = 'Net Sales'
+        elif c in ('gross sales', 'gross_sales'):
+            column_map[col] = 'Gross Sales'
+        elif c == 'refunds':
+            column_map[col] = 'Refunds'
+        elif c.replace(' ', '_') in ('time', 'timestamp', 'created_at', 'transaction_time', 'trans_time', 'created'):
+            column_map[col] = 'Time'
+        elif c == 'products':
+            column_map[col] = 'Products'
+        elif c == 'commissions':
+            column_map[col] = 'Commissions'
+    if column_map:
+        df = df.rename(columns=column_map)
+    return df
+
+
+def _process_sales_df(df):
+    """Apply common processing to sales dataframe (from Supabase or CSV)"""
+    df = _normalize_supabase_columns(df)
+    def _col_matches(col, *names):
+        c = str(col).strip().lower()
+        return c in names or c.replace(' ', '_') in names or c.replace('_', ' ') in names
+    net_col = next((c for c in df.columns if _col_matches(c, 'net sales', 'net_sales')), None)
+    gross_col = next((c for c in df.columns if _col_matches(c, 'gross sales', 'gross_sales')), None)
+    refund_col = next((c for c in df.columns if _col_matches(c, 'refunds')), None)
+    date_col = next((c for c in df.columns if _col_matches(c, 'date')), None)
+    if not net_col or not date_col:
+        return None
+    df['Net_Sales'] = df[net_col].apply(_clean_currency)
+    df['Gross_Sales'] = df[gross_col].apply(_clean_currency) if gross_col else df['Net_Sales']
+    df['Refunds'] = df[refund_col].apply(_clean_currency) if refund_col else 0
+    # Parse dates: try DD/MM/YYYY first, then ISO (YYYY-MM-DD) - keep original for fallback
+    date_series = df[date_col].copy()
+    df['Date'] = pd.to_datetime(date_series, format='%d/%m/%Y', errors='coerce')
+    if df['Date'].isna().any():
+        df['Date'] = pd.to_datetime(date_series, errors='coerce')  # fallback uses original values
+    df = df[df['Date'].notna()]
+    df = df[(df['Net_Sales'] > 0) | (df['Refunds'] != 0)]
+    emp_col = next((c for c in df.columns if str(c).lower() == 'employee'), None)
+    if emp_col:
+        df['Employee'] = df[emp_col].astype(str).str.strip()
+        df['Employee'] = df['Employee'].replace(['', 'nan', 'NaN', 'None'], pd.NA)
+        df['Employee'] = df['Employee'].apply(normalize_employee_name)
+    def _is_time_col(col):
+        c = str(col).strip().lower().replace(' ', '_')
+        if c in ('time', 'timestamp', 'created_at', 'transaction_time', 'trans_time', 'created'):
+            return True
+        # Fuzzy: column contains 'time' or 'timestamp' (e.g. "Transaction Time", "created_at")
+        if 'timestamp' in c or (c.endswith('_time') or c.endswith('time')) and 'day' not in c and 'week' not in c:
+            return True
+        return False
+    time_col = next((c for c in df.columns if _is_time_col(c)), None)
+    if time_col:
+        # Handle numeric Unix timestamps (Supabase/PostgreSQL may return these)
+        time_vals = df[time_col].copy()
+        if np.issubdtype(time_vals.dtype, np.number):
+            time_vals = pd.to_datetime(time_vals, unit='s', errors='coerce')
+        else:
+            time_vals = pd.to_datetime(time_vals, errors='coerce')
+        df['Time_Parsed'] = time_vals
+        # Supabase may return Python datetime objects (dtype object) - ensure we can extract hour
+        def _extract_hour(val):
+            if pd.isna(val):
+                return np.nan
+            if hasattr(val, 'hour'):
+                return val.hour
+            s = str(val).strip()
+            # ISO datetime: 2021-08-24T17:21:21.000+01:00
+            m = re.search(r'T(\d{1,2}):', s)
+            if m:
+                return int(m.group(1))
+            # Time-only: 17:21:21 or 09:53:04
+            m = re.match(r'(\d{1,2}):\d{2}', s)
+            if m:
+                return int(m.group(1))
+            return np.nan
+        hours = df[time_col].apply(_extract_hour)
+        if hours.notna().any():
+            df['Hour'] = hours
+        elif pd.api.types.is_datetime64_any_dtype(df['Time_Parsed']) and df['Time_Parsed'].notna().any():
             df['Hour'] = df['Time_Parsed'].dt.hour
-        
-        # Ensure Day of the Week column exists - calculate from Date if needed
-        if 'Day of the Week' not in df.columns or df['Day of the Week'].isna().all():
-            if 'Date' in df.columns and df['Date'].notna().any():
-                df['Day of the Week'] = df['Date'].dt.day_name()
-        
-        # Also create Day_of_Week for compatibility
-        if 'Day of the Week' in df.columns:
-            df['Day_of_Week'] = df['Day of the Week']
-        
-        return df
+        else:
+            df['Hour'] = np.nan
+    # Fallback: extract hour from Date if Date has time component (e.g. full datetime string)
+    if 'Hour' not in df.columns or (df['Hour'].isna().all() if 'Hour' in df.columns else False):
+        date_parsed = pd.to_datetime(df['Date'], errors='coerce')
+        if pd.api.types.is_datetime64_any_dtype(date_parsed) and date_parsed.notna().any():
+            has_time = date_parsed.dt.hour.notna() & (date_parsed.dt.hour != 0)
+            if has_time.any():
+                df['Hour'] = date_parsed.dt.hour
+            elif 'Hour' not in df.columns:
+                df['Hour'] = np.nan
+        elif 'Hour' not in df.columns:
+            df['Hour'] = np.nan
+    # Ensure Date is datetime before using .dt accessor
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    if 'Day of the Week' not in df.columns or df['Day of the Week'].isna().all():
+        if 'Date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['Date']) and df['Date'].notna().any():
+            df['Day of the Week'] = df['Date'].dt.day_name()
+    if 'Day of the Week' in df.columns:
+        df['Day_of_Week'] = df['Day of the Week']
+    products_col = next((c for c in df.columns if str(c).lower() == 'products'), None)
+    if products_col and products_col != 'Products':
+        df['Products'] = df[products_col]
+    return df
+
+
+def _load_from_csv():
+    """Fallback: load from local CSV files when Supabase fails"""
+    # Try script dir first, then cwd (Streamlit may run from different path)
+    search_dirs = [Path(__file__).resolve().parent, Path.cwd()]
+    csv_files = [
+        ("PYT Sales Data_rows.csv", "PYT"),
+        ("Opatra Sales Data_rows.csv", "Opatra"),
+    ]
+    for base in search_dirs:
+        all_dfs = []
+        for fname, shop in csv_files:
+            path = base / fname
+            if path.exists():
+                try:
+                    df = pd.read_csv(path)
+                    df["Shop"] = shop
+                    all_dfs.append(df)
+                except Exception:
+                    pass
+        if all_dfs:
+            return all_dfs
+    return []
+
+
+@st.cache_data(ttl=300)  # 5 min cache - use Refresh Data to force reload
+def load_sales_data():
+    """Load sales transaction data from Supabase, with CSV fallback. Returns (df, source) or (None, None)."""
+    try:
+        all_dfs = []
+        data_source = None  # 'Supabase' or 'Local CSV'
+        # Try Supabase first if configured
+        if SUPABASE_URL and SUPABASE_KEY:
+            try:
+                from supabase import create_client
+                supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+                table_configs = [
+                    (SUPABASE_TABLE_PYT, 'PYT'),
+                    (SUPABASE_TABLE_OPATRA, 'Opatra'),
+                ]
+                page_size = 1000
+                for table_name, shop in table_configs:
+                    try:
+                        all_rows = []
+                        offset = 0
+                        while True:
+                            response = supabase.table(table_name).select('*').range(offset, offset + page_size - 1).execute()
+                            if not response.data:
+                                break
+                            all_rows.extend(response.data)
+                            if len(response.data) < page_size:
+                                break
+                            offset += page_size
+                        if all_rows:
+                            df = pd.DataFrame(all_rows)
+                            df['Shop'] = shop
+                            all_dfs.append(df)
+                    except Exception as e:
+                        st.warning(f"Supabase {table_name}: {e}")
+                if all_dfs:
+                    data_source = "Supabase"
+            except Exception as e:
+                st.warning(f"Supabase connection failed: {e}")
+
+        # Fallback to local CSV if Supabase returned nothing
+        if not all_dfs:
+            all_dfs = _load_from_csv()
+            if all_dfs:
+                data_source = "Local CSV"
+                st.info("📁 Loaded from local CSV files (Supabase unavailable or empty).")
+
+        if not all_dfs:
+            st.error("No sales data loaded. Add SUPABASE_URL/KEY in .env or place PYT Sales Data_rows.csv and Opatra Sales Data_rows.csv in the project folder.")
+            return None, None
+
+        df = pd.concat(all_dfs, ignore_index=True)
+        df = _process_sales_df(df)
+        if df is None or len(df) == 0:
+            # Try CSV fallback if Supabase data failed to process
+            csv_dfs = _load_from_csv()
+            if csv_dfs:
+                df = pd.concat(csv_dfs, ignore_index=True)
+                df = _process_sales_df(df)
+                if df is not None and len(df) > 0:
+                    data_source = "Local CSV"
+                    st.info("📁 Using local CSV files (Supabase data had format issues).")
+        if df is None or len(df) == 0:
+            st.error("Data loaded but missing required columns (Net Sales, Date) or all rows filtered out.")
+            with st.expander("Debug: columns received"):
+                raw = pd.concat(all_dfs, ignore_index=True)
+                st.write("Columns:", list(raw.columns))
+                st.write("Row count:", len(raw))
+                if len(raw) > 0:
+                    row = raw.iloc[0]
+                    date_val = next((row[c] for c in raw.columns if str(c).lower() == 'date'), 'N/A')
+                    net_val = next((row[c] for c in raw.columns if 'net' in str(c).lower() and 'sales' in str(c).lower()), 'N/A')
+                    st.write("Sample Date:", date_val)
+                    st.write("Sample Net Sales:", net_val)
+            return None, None
+        return df, data_source or "Supabase"  # default to Supabase if we got data from it
     except Exception as e:
         st.error(f"Error loading sales data: {e}")
-        return None
+        return None, None
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
 def load_day_of_week_analysis():
-    """Load day of week analysis data"""
-    try:
-        df = pd.read_csv('day_of_week_analysis.csv', skiprows=2)
-        df.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']
-        df = df[df['Day'].notna() & (df['Day'] != '')]
-        numeric_cols = ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    except:
-        return None
+    """Load day of week analysis from file (if it exists)."""
+    for base in [Path(__file__).resolve().parent, Path.cwd()]:
+        path = base / 'day_of_week_analysis.csv'
+        if path.exists():
+            try:
+                df = pd.read_csv(path, skiprows=2)
+                df.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']
+                df = df[df['Day'].notna() & (df['Day'] != '')]
+                for col in ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                return df
+            except Exception:
+                break
+    return None
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
 def load_hourly_analysis():
-    """Load hourly patterns analysis data"""
-    try:
-        df = pd.read_csv('hourly_patterns_analysis.csv', skiprows=2)
-        df.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Gross_Sales_Sum']
-        df = df[df['Hour'].notna()]
-        df['Hour'] = pd.to_numeric(df['Hour'], errors='coerce')
-        numeric_cols = ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Gross_Sales_Sum']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    except:
-        return None
+    """Load hourly patterns analysis from file (if it exists)."""
+    for base in [Path(__file__).resolve().parent, Path.cwd()]:
+        path = base / 'hourly_patterns_analysis.csv'
+        if path.exists():
+            try:
+                df = pd.read_csv(path, skiprows=2)
+                df.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Gross_Sales_Sum']
+                df = df[df['Hour'].notna()]
+                df['Hour'] = pd.to_numeric(df['Hour'], errors='coerce')
+                for col in ['Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Gross_Sales_Sum']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                return df
+            except Exception:
+                break
+    return None
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
 def load_product_analysis():
-    """Load product patterns analysis data"""
-    try:
-        df = pd.read_csv('product_patterns_analysis.csv', skiprows=1)
-        df.columns = ['Index', 'Product', 'Total_Sales', 'Count', 'Avg_Sale']
-        df = df[df['Product'].notna() & (df['Product'] != '')]
-        numeric_cols = ['Total_Sales', 'Count', 'Avg_Sale']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        # Filter out negative/zero sales
-        df = df[df['Total_Sales'] > 0]
-        return df
-    except:
-        return None
+    """Load product patterns analysis from file (if it exists)."""
+    for base in [Path(__file__).resolve().parent, Path.cwd()]:
+        path = base / 'product_patterns_analysis.csv'
+        if path.exists():
+            try:
+                df = pd.read_csv(path, skiprows=1)
+                df.columns = ['Index', 'Product', 'Total_Sales', 'Count', 'Avg_Sale']
+                df = df[df['Product'].notna() & (df['Product'] != '')]
+                for col in ['Total_Sales', 'Count', 'Avg_Sale']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                df = df[df['Total_Sales'] > 0]
+                return df
+            except Exception:
+                break
+    return None
 
 def forecast_sales(sales_df, periods=30, method='moving_avg'):
     """Improved forecast using multiple methods"""
@@ -437,137 +972,157 @@ def forecast_monthly(sales_df, months=6, method='moving_avg'):
         return forecast_df, recent_avg, 0, 'Conservative'
 
 def main():
+    # Session state for UI preferences
+    if "dark_mode" not in st.session_state:
+        st.session_state.dark_mode = False
+    if "tab_index" not in st.session_state:
+        st.session_state.tab_index = 0
+
+    dark_mode = st.session_state.dark_mode
+    inject_css(dark_mode)
+
     st.markdown('<div class="main-header">📊 Complete Sales Analytics Dashboard</div>', unsafe_allow_html=True)
-    
-    # Load all data
-    employee_df = load_employee_data()
-    sales_df = load_sales_data()
-    day_of_week_df = load_day_of_week_analysis()
-    hourly_df = load_hourly_analysis()
-    product_df = load_product_analysis()
-    
+
+    # Load all data with loading spinner
+    with st.spinner("Loading sales data..."):
+        sales_df, data_source = load_sales_data()
+        employee_df = load_employee_data()
+        if employee_df is None and sales_df is not None:
+            employee_df = _compute_employee_performance_from_sales(sales_df)
+        day_of_week_df = load_day_of_week_analysis()
+        if day_of_week_df is None and sales_df is not None:
+            day_of_week_df = _compute_day_of_week_from_sales(sales_df)
+        hourly_df = load_hourly_analysis()
+        if hourly_df is None and sales_df is not None:
+            hourly_df = _compute_hourly_from_sales(sales_df)
+        product_df = load_product_analysis()
+        if product_df is None and sales_df is not None:
+            product_df = _compute_product_from_sales(sales_df)
+
     if sales_df is None:
-        st.error("Could not load sales data. Please ensure the CSV files are in the same directory.")
+        st.error("Could not load sales data. Check Supabase credentials in .env, or ensure PYT Sales Data_rows.csv and Opatra Sales Data_rows.csv are in the project folder.")
         return
     
     # Sidebar filters
     st.sidebar.header("🔍 Filters")
-    
-    # Airtable Sync Section (if available)
-    if AIRTABLE_AVAILABLE:
-        with st.sidebar.expander("☁️ Sync from Airtable", expanded=False):
-            st.write("**Sync latest data from Airtable**")
-            
-            airtable_token = st.text_input(
-                "Airtable Token",
-                type="password",
-                help="Your Airtable Personal Access Token",
-                key="airtable_token"
-            )
-            
-            base_id = st.text_input(
-                "Base ID",
-                value=os.getenv('AIRTABLE_BASE_ID', ''),
-                help="Your Airtable Base ID (e.g., appFM5cdHTTI8IugV)",
-                key="base_id"
-            )
-            
-            table_name = st.text_input(
-                "Table Name",
-                value="Opatra Sales from July 2023",
-                help="Name of the Airtable table",
-                key="table_name"
-            )
-            
-            if st.button("🔄 Sync from Airtable", key="sync_airtable"):
-                if airtable_token and base_id and table_name:
-                    with st.spinner("Syncing data from Airtable..."):
-                        try:
-                            api = Api(airtable_token)
-                            table = api.table(base_id, table_name)
-                            
-                            all_records = []
-                            for page in table.iterate():
-                                all_records.extend(page)
-                            
-                            if all_records:
-                                records_data = []
-                                for record in all_records:
-                                    record_dict = record['fields'].copy()
-                                    records_data.append(record_dict)
-                                
-                                df = pd.DataFrame(records_data)
-                                
-                                # Save to CSV
-                                csv_path = 'Opatra Sales from July 2023-Grid view.csv'
-                                df.to_csv(csv_path, index=False)
-                                
-                                st.success(f"✅ Synced {len(df)} records from Airtable!")
-                                st.info("Click 'Refresh Data' below to load the new data")
-                                
-                                # Clear cache to force reload
-                                st.cache_data.clear()
-                            else:
-                                st.warning("No records found in Airtable")
-                        except Exception as e:
-                            st.error(f"❌ Error syncing: {str(e)}")
-                            st.info("Check your token, base ID, and table name")
-                else:
-                    st.warning("Please fill in all Airtable connection details")
-            
-            st.caption("💡 Get your token from: https://airtable.com/create/tokens")
+    st.session_state.dark_mode = st.sidebar.toggle(
+        "🌙 Dark mode",
+        value=st.session_state.dark_mode,
+        help="Switch between light and dark theme for the dashboard"
+    )
+
+    # Shop filter
+    if 'Shop' in sales_df.columns:
+        unique_shops = sorted(sales_df['Shop'].dropna().unique().tolist())
+        all_shops = ['All Shops'] + unique_shops
+        selected_shop = st.sidebar.selectbox("Select Shop", all_shops, help="Filter by shop (PYT, Opatra, etc.)")
+    else:
+        selected_shop = 'All Shops'
     
     # Refresh data button
-    if st.sidebar.button("🔄 Refresh Data", help="Click to reload data from CSV files (useful after adding new data)"):
+    if st.sidebar.button("🔄 Refresh Data", help="Click to reload data from Supabase"):
         st.cache_data.clear()
         st.success("✅ Cache cleared! Reloading data...")
         st.rerun()
     
-    # Debug section for refunds (temporary - can be removed after fixing)
-    with st.sidebar.expander("🔍 Debug: Refund Data Check", expanded=False):
+    # Data source indicator
+    if data_source:
+        if data_source == "Supabase":
+            st.sidebar.caption("☁️ **Data source:** Supabase")
+        else:
+            st.sidebar.caption("📁 **Data source:** Local CSV files")
+    
+    # Debug section for data/columns (helps diagnose missing employees)
+    with st.sidebar.expander("🔍 Debug: Data & Columns", expanded=False):
         if sales_df is not None and len(sales_df) > 0:
+            st.write(f"**Total rows:** {len(sales_df):,}")
+            st.write(f"**Columns from Supabase:** {list(sales_df.columns)}")
+            if 'Employee' in sales_df.columns:
+                emp_count = sales_df['Employee'].dropna().nunique()
+                emp_sample = sales_df['Employee'].dropna().unique()[:10].tolist()
+                st.write(f"**Unique employees:** {emp_count}")
+                st.write(f"**Sample employees:** {emp_sample}")
+                # Show potential duplicates (similar names that may need mapping)
+                similar = find_similar_employee_names(sales_df)
+                if similar:
+                    st.write("**⚠️ Potential duplicates** (add to EMPLOYEE_NAME_MAPPING in dashboard.py):")
+                    for norm, names in list(similar.items())[:5]:
+                        st.write(f"  `{names[0]}` ← map from: {names[1:]}")
+            else:
+                st.write("❌ **'Employee' column not found** — check your Supabase table has an 'Employee' column (or 'employee' after import)")
             if 'Refunds' in sales_df.columns:
                 raw_refunds_sum = sales_df['Refunds'].sum()
-                refunds_nonzero_count = len(sales_df[sales_df['Refunds'] != 0])
-                refunds_sample = sales_df[sales_df['Refunds'] != 0]['Refunds'].head(3).tolist()
-                st.write(f"**Total rows:** {len(sales_df)}")
-                st.write(f"**Rows with non-zero refunds:** {refunds_nonzero_count}")
-                st.write(f"**Raw refund sum:** {raw_refunds_sum:.2f}")
-                st.write(f"**Sample refund values:** {refunds_sample}")
-                st.write(f"**Refund column dtype:** {sales_df['Refunds'].dtype}")
+                st.write(f"**Refunds sum:** {raw_refunds_sum:.2f}")
+            time_cols = [c for c in sales_df.columns if 'time' in str(c).lower() or str(c).lower() in ('timestamp', 'created_at')]
+            hour_ok = 'Hour' in sales_df.columns and sales_df['Hour'].notna().any()
+            if time_cols:
+                sample = sales_df[time_cols[0]].dropna().iloc[0] if sales_df[time_cols[0]].notna().any() else "N/A"
+                st.write(f"**Time column:** {time_cols[0]} | Sample: `{sample}` | Hour parsed: {'✓' if hour_ok else '✗'}")
             else:
-                st.write("❌ 'Refunds' column not found in data")
+                st.write("**Time column:** Not found (hourly patterns need Time, timestamp, created_at, transaction_time)")
+            if not hour_ok:
+                st.caption("💡 Add a Time column to your Supabase table (e.g. `time`, `created_at`, `timestamp`) with values like `09:53:04` or `2023-07-14T09:53:04+00`. Or ensure your Date column includes full datetime.")
         else:
             st.write("❌ No sales data loaded")
     
-    st.sidebar.caption("💡 **Tip:** After adding new data to CSV files, click 'Refresh Data' to see updates")
+    st.sidebar.caption("💡 **Tip:** Data loads directly from Supabase. Click 'Refresh Data' to see updates.")
+    
+    with st.sidebar.expander("👤 Mark employees active/inactive", expanded=True):
+        st.caption("Go to the **Employee Status** tab in the main area to mark employees as active or inactive. Use the Status dropdown for each employee, then click **Save Employee Status**.")
+    
+    # Apply shop filter to get working dataset
+    if selected_shop != 'All Shops' and 'Shop' in sales_df.columns:
+        work_df = sales_df[sales_df['Shop'] == selected_shop].copy()
+    else:
+        work_df = sales_df.copy()
+    
+    # Load employee active/inactive status
+    employee_status = load_employee_status()
     
     # Get unique employees, ensuring they're cleaned strings
-    if 'Employee' in sales_df.columns:
-        unique_employees = sales_df['Employee'].dropna().unique()
-        # Convert to string, strip, and filter out empty/NaN
+    if 'Employee' in work_df.columns:
+        unique_employees = work_df['Employee'].dropna().unique()
         unique_employees = [str(emp).strip() for emp in unique_employees if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
-        unique_employees = sorted(list(set(unique_employees)))  # Remove duplicates and sort
+        unique_employees = sorted(list(set(unique_employees)))
+        # Separate active and inactive for display
+        active_employees = [e for e in unique_employees if is_employee_active(e, employee_status)]
+        inactive_employees = [e for e in unique_employees if not is_employee_active(e, employee_status)]
     else:
         unique_employees = []
+        active_employees = []
+        inactive_employees = []
     
-    all_employees = ['All'] + unique_employees
-    selected_employee = st.sidebar.selectbox("Select Employee", all_employees)
+    # Employee filter: show active first, then inactive with label
+    show_inactive_in_filter = st.sidebar.checkbox("Include inactive employees in filter", value=True, help="Uncheck to hide inactive employees from the Employee dropdown")
+    if show_inactive_in_filter:
+        emp_options = ['All'] + active_employees + [f"{e} (inactive)" for e in inactive_employees]
+    else:
+        emp_options = ['All'] + active_employees
+    selected_employee_raw = st.sidebar.selectbox("Select Employee", emp_options, help="View analytics for a specific employee or All for combined view")
+    # Normalize selection (strip "(inactive)" for filtering and display)
+    selected_employee = selected_employee_raw.replace(" (inactive)", "").strip() if selected_employee_raw != 'All' else 'All'
     
-    if sales_df['Date'].notna().any():
-        min_date = sales_df['Date'].min().date()
-        max_date = sales_df['Date'].max().date()
+    if work_df['Date'].notna().any():
+        min_date = work_df['Date'].min().date()
+        max_date = work_df['Date'].max().date()
         
         # Quick date range presets
         st.sidebar.subheader("📅 Date Range")
         use_preset = st.sidebar.radio(
             "Quick Select",
-            ["All Time", "Last 7 Days", "Last 30 Days", "Last 90 Days", "Last Year", "Custom Range"],
-            index=0
+            ["All Time", "This Week", "Last 7 Days", "Last 30 Days", "Last 90 Days", "Last Year", "YTD", "Custom Range"],
+            index=0,
+            help="Choose a preset range or select Custom for manual dates"
         )
-        
+
         if use_preset == "All Time":
             start_date = min_date
+            end_date = max_date
+        elif use_preset == "This Week":
+            # Monday of current week to today
+            today = max_date
+            start_of_week = today - timedelta(days=today.weekday())
+            start_date = max(min_date, start_of_week)
             end_date = max_date
         elif use_preset == "Last 7 Days":
             end_date = max_date
@@ -581,6 +1136,9 @@ def main():
         elif use_preset == "Last Year":
             end_date = max_date
             start_date = max_date - timedelta(days=365)
+        elif use_preset == "YTD":
+            start_date = max(min_date, max_date.replace(month=1, day=1))
+            end_date = max_date
         else:  # Custom Range
             col1, col2 = st.sidebar.columns(2)
             with col1:
@@ -606,15 +1164,15 @@ def main():
             start_date = min_date
             end_date = max_date
         
-        filtered_sales = sales_df[
-            (sales_df['Date'].dt.date >= start_date) & 
-            (sales_df['Date'].dt.date <= end_date)
+        filtered_sales = work_df[
+            (work_df['Date'].dt.date >= start_date) & 
+            (work_df['Date'].dt.date <= end_date)
         ]
         
         # Display selected range
         st.sidebar.caption(f"📆 {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}")
     else:
-        filtered_sales = sales_df
+        filtered_sales = work_df
         # Set default dates if no date data
         start_date = None
         end_date = None
@@ -640,21 +1198,21 @@ def main():
             if len(filtered_sales) == 0:
                 # Check what we have before employee filtering
                 if start_date is not None and end_date is not None:
-                    date_filtered = sales_df[
-                        (sales_df['Date'].dt.date >= start_date) & 
-                        (sales_df['Date'].dt.date <= end_date)
+                    date_filtered = work_df[
+                        (work_df['Date'].dt.date >= start_date) & 
+                        (work_df['Date'].dt.date <= end_date)
                     ]
                     before_filter_count = len(date_filtered)
                     employees_in_range = date_filtered['Employee'].dropna().unique()
                 else:
-                    before_filter_count = len(sales_df)
-                    employees_in_range = sales_df['Employee'].dropna().unique()
+                    before_filter_count = len(work_df)
+                    employees_in_range = work_df['Employee'].dropna().unique()
                 
                 # Check if employee exists at all
-                all_employees = sales_df['Employee'].dropna().unique()
+                all_employees = work_df['Employee'].dropna().unique()
                 employee_exists = any(
                     str(emp).strip().lower() == selected_employee.strip().lower() 
-                    for emp in all_employees
+                    for emp in work_df['Employee'].dropna().unique()
                 )
                 
                 if employee_exists:
@@ -675,40 +1233,64 @@ def main():
             st.warning(f"⚠️ **No data found for: {selected_employee}** | 📅 **Date Range:** {date_range_str}")
             # Show available employees for debugging
             with st.expander("🔍 Debug: Available Employees"):
-                all_employees_list = sorted(sales_df['Employee'].dropna().unique().tolist())
+                all_employees_list = sorted(work_df['Employee'].dropna().unique().tolist())
                 st.write(f"**Total employees in data:** {len(all_employees_list)}")
                 st.write("**First 20 employees:**")
                 for emp in all_employees_list[:20]:
-                    count = len(sales_df[sales_df['Employee'] == emp])
+                    count = len(work_df[work_df['Employee'] == emp])
                     st.write(f"- {emp} ({count} transactions)")
                 if len(all_employees_list) > 20:
                     st.write(f"... and {len(all_employees_list) - 20} more")
     
     # Information about adding new data
-    with st.sidebar.expander("ℹ️ Adding New Data"):
+    with st.sidebar.expander("ℹ️ Data Source"):
         st.write("""
-        **Yes, the dashboard will work with new data!**
+        **Data loads directly from Supabase**
         
-        **To add new sales data:**
-        1. Add new rows to `Opatra Sales from July 2023-Grid view.csv`
-        2. Keep the same column structure
-        3. Dates can be in format: DD/MM/YYYY
-        4. Click "🔄 Refresh Data" button above
+        Sales data is fetched from Supabase tables:
+        - PYT Sales Data
+        - Opatra Sales Data
         
-        **Supported date formats:**
-        - DD/MM/YYYY (e.g., 15/01/2026)
-        - Other common formats are auto-detected
+        **To see new data:**
+        1. Add records to your Supabase tables
+        2. Click "🔄 Refresh Data" above
         
-        **The dashboard will automatically:**
-        - ✅ Handle any date range
-        - ✅ Process any number of transactions
-        - ✅ Include new employees/products
-        - ✅ Update all charts and metrics
-        - ✅ Adjust forecasts based on new data
+        **Employee name normalization:** Variant names (e.g. "DuaaZ", "Bir_ra Thanvi") 
+        are mapped to canonical names in `dashboard.py` → `EMPLOYEE_NAME_MAPPING`. 
+        Add new mappings there as you discover duplicates. Check "Debug: Data & Columns" 
+        for potential duplicates.
         
-        **Note:** Data is cached for 1 hour. Use "Refresh Data" to see updates immediately.
+        **Supported date formats:** DD/MM/YYYY
+        **Note:** Data is cached 1 hour. Use "Refresh Data" to see updates.
         """)
-    
+
+    # Active filter summary bar
+    date_str = (f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" 
+               if (start_date is not None and end_date is not None) else "All dates")
+    shop_badge = selected_shop if selected_shop != 'All Shops' else "All Shops"
+    emp_badge = selected_employee if selected_employee != 'All' else "All Employees"
+    st.markdown(f"""
+    <div class="filter-summary">
+        <span class="filter-badge">🏪 {shop_badge}</span>
+        <span class="filter-badge">👤 {emp_badge}</span>
+        <span class="filter-badge">📅 {date_str}</span>
+        <span class="filter-badge">📊 {len(filtered_sales):,} transactions</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Empty state when no data
+    if len(filtered_sales) == 0:
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-state-icon">📭</div>
+            <h3>No sales data for the selected filters</h3>
+            <p>Try adjusting the date range, employee, or shop.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
+    st.divider()
+
     # Key Metrics
     if selected_employee != 'All':
         st.header(f"📈 Performance Metrics - {selected_employee}")
@@ -744,15 +1326,44 @@ def main():
     else:
         total_refunds = 0
     
-    unique_employees = filtered_sales['Employee'].nunique()
+    unique_employees_count = filtered_sales['Employee'].nunique()
+
+    # KPI trend: period-over-period comparison (vs prior period of same length)
+    prev_net_sales = prev_avg_transaction = prev_transactions = prev_refunds = None
+    if start_date and end_date and work_df['Date'].notna().any():
+        period_days = (end_date - start_date).days + 1
+        prev_end_date = start_date - timedelta(days=1)
+        prev_start_date = prev_end_date - timedelta(days=period_days - 1)
+        prev_sales = work_df[
+            (work_df['Date'].dt.date >= prev_start_date) &
+            (work_df['Date'].dt.date <= prev_end_date)
+        ]
+        if selected_employee != 'All':
+            prev_sales = prev_sales[prev_sales['Employee'].astype(str).str.strip() == selected_employee.strip()]
+        if len(prev_sales) > 0:
+            prev_net_sales = prev_sales['Net_Sales'].sum()
+            prev_transactions = len(prev_sales)
+            prev_avg_transaction = prev_net_sales / prev_transactions if prev_transactions > 0 else 0
+            prev_refunds = abs(prev_sales['Refunds'].sum()) if 'Refunds' in prev_sales.columns else 0
+
+    def _trend_delta(current, prev, is_pct=False):
+        """Format delta for period-over-period comparison."""
+        if prev is None or prev == 0:
+            return None
+        change = (current - prev) / prev * 100 if is_pct else current - prev
+        if is_pct:
+            return f"{change:+.1f}% vs prior period"
+        if abs(change) >= 1:
+            return f"{change:+,.0f} vs prior period"
+        return f"{change:+.2f} vs prior period"
     
     # Calculate comparison metrics if employee is selected
-    if selected_employee != 'All' and len(sales_df) > len(filtered_sales):
+    if selected_employee != 'All' and len(work_df) > len(filtered_sales) and start_date and end_date:
         # Get all data for comparison (same date range, all employees)
-        comparison_sales = sales_df[
-            (sales_df['Date'].dt.date >= start_date) & 
-            (sales_df['Date'].dt.date <= end_date)
-        ] if sales_df['Date'].notna().any() else sales_df
+        comparison_sales = work_df[
+            (work_df['Date'].dt.date >= start_date) &
+            (work_df['Date'].dt.date <= end_date)
+        ] if work_df['Date'].notna().any() else work_df
         
         all_avg_transaction = comparison_sales['Net_Sales'].sum() / len(comparison_sales) if len(comparison_sales) > 0 else 0
         all_total_sales = comparison_sales['Net_Sales'].sum()
@@ -822,17 +1433,27 @@ def main():
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         
         with col1:
-            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}")
+            delta = _trend_delta(total_net_sales, prev_net_sales, is_pct=True) if prev_net_sales else None
+            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}", delta=delta,
+                     help="Net sales for the selected period. Delta shows % change vs prior period of same length.")
         with col2:
-            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}")
+            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}",
+                     help="Gross sales before refunds")
         with col3:
-            st.metric("Total Transactions", f"{total_transactions:,}")
+            delta = _trend_delta(total_transactions, prev_transactions, is_pct=True) if prev_transactions else None
+            st.metric("Total Transactions", f"{total_transactions:,}", delta=delta,
+                     help="Number of transactions. Delta shows % change vs prior period.")
         with col4:
-            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}")
+            delta = _trend_delta(avg_transaction, prev_avg_transaction) if prev_avg_transaction and prev_avg_transaction > 0 else None
+            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", delta=delta,
+                     help="Average transaction value")
         with col5:
-            st.metric("Total Refunds", f"£{total_refunds:,.2f}")
+            delta = _trend_delta(total_refunds, prev_refunds) if prev_refunds is not None else None
+            st.metric("Total Refunds", f"£{total_refunds:,.2f}", delta=delta,
+                     help="Total refund amount")
         with col6:
-            st.metric("Active Employees", f"{unique_employees}")
+            st.metric("Active Employees", f"{unique_employees_count}",
+                     help="Number of unique employees with sales in this period")
         
         # Debug: Show refund statistics if refunds are 0 but should exist
         if total_refunds == 0 and 'Refunds' in filtered_sales.columns:
@@ -845,15 +1466,21 @@ def main():
                     st.write("**Note:** If refunds show 0 but you see data here, try clicking '🔄 Refresh Data' in the sidebar to clear the cache.")
     
     st.divider()
-    
-    # Create tabs for different analyses
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+
+    # Quick navigation hint
+    tab_names = ["Daily Trends", "Day of Week", "Employee Status", "Employee Performance", "Hourly Patterns", "Product Patterns", "Future Projections", "Best Team"]
+    st.caption("📑 **Sections:** " + " • ".join(tab_names))
+
+    # Create tabs for different analyses (Employee Status early for visibility)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "📅 Daily Trends", 
         "📆 Day of Week Analysis", 
+        "👤 Employee Status",
         "👥 Employee Performance", 
         "⏰ Hourly Patterns", 
         "🛍️ Product Patterns", 
-        "🔮 Future Projections"
+        "🔮 Future Projections",
+        "🏆 Best Team for Week"
     ])
     
     # TAB 1: Daily Trends Analysis
@@ -881,7 +1508,7 @@ def main():
             )
             fig.update_traces(mode='lines+markers', line=dict(width=2))
             fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            render_chart(fig, dark_mode)
         
         with col2:
             title = f'Moving Averages - {selected_employee}' if selected_employee != 'All' else 'Moving Averages'
@@ -917,7 +1544,7 @@ def main():
                 yaxis_title='Net Sales (£)',
                 height=400
             )
-            st.plotly_chart(fig, use_container_width=True)
+            render_chart(fig, dark_mode)
         
         col1, col2 = st.columns(2)
         
@@ -937,16 +1564,19 @@ def main():
             title = f'Monthly Comparison - {selected_employee}' if selected_employee != 'All' else 'Monthly Sales Comparison'
             st.subheader("Monthly Comparison")
             monthly_comparison = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M'))['Net_Sales'].sum()
-            monthly_comparison.index = monthly_comparison.index.astype(str)
-            
+            monthly_df = pd.DataFrame({
+                'Month': monthly_comparison.index.astype(str),
+                'Net_Sales': monthly_comparison.values
+            })
             fig = px.bar(
-                x=monthly_comparison.index,
-                y=monthly_comparison.values,
-                labels={'x': 'Month', 'y': 'Net Sales (£)'},
+                monthly_df,
+                x='Month',
+                y='Net_Sales',
+                labels={'Net_Sales': 'Net Sales (£)'},
                 title=title
             )
             fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            render_chart(fig, dark_mode)
     
     # TAB 2: Day of Week Analysis
     with tab2:
@@ -975,7 +1605,7 @@ def main():
                     color_continuous_scale='Blues'
                 )
                 fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             with col2:
                 st.subheader("Average Transaction by Day")
@@ -988,7 +1618,7 @@ def main():
                     color_continuous_scale='Greens'
                 )
                 fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             col1, col2 = st.columns(2)
             
@@ -1003,7 +1633,7 @@ def main():
                     color_continuous_scale='Oranges'
                 )
                 fig.update_layout(height=400, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             with col2:
                 st.subheader("Day of Week Summary Table")
@@ -1076,7 +1706,7 @@ def main():
                             showlegend=False,
                             xaxis={'categoryorder': 'array', 'categoryarray': day_order}
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        render_chart(fig, dark_mode)
                     
                     with col2:
                         title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
@@ -1095,7 +1725,7 @@ def main():
                             showlegend=False,
                             xaxis={'categoryorder': 'array', 'categoryarray': day_order}
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        render_chart(fig, dark_mode)
                     
                     col1, col2 = st.columns(2)
                     
@@ -1116,7 +1746,7 @@ def main():
                             showlegend=False,
                             xaxis={'categoryorder': 'array', 'categoryarray': day_order}
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        render_chart(fig, dark_mode)
                     
                     with col2:
                         st.subheader("Day of Week Summary Table")
@@ -1131,8 +1761,38 @@ def main():
                 else:
                     st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
-    # TAB 3: Employee Performance
+    # TAB 3: Employee Status (active/inactive) - placed early for visibility
     with tab3:
+        st.header("👤 Employee Status")
+        st.caption("Mark employees as active or inactive. Inactive employees are excluded from Best Team recommendations.")
+        status_dict = load_employee_status()
+        for emp in unique_employees:
+            if emp not in status_dict:
+                status_dict[emp] = 'active'
+        status_df = pd.DataFrame([
+            {'Employee': emp, 'Status': status_dict.get(emp, 'active')}
+            for emp in sorted(unique_employees)
+        ])
+        edited = st.data_editor(
+            status_df,
+            column_config={
+                'Employee': st.column_config.TextColumn('Employee', disabled=True, help="Employee name"),
+                'Status': st.column_config.SelectboxColumn('Status', options=['active', 'inactive'], required=True, help="Active = included in Best Team; Inactive = excluded from recommendations"),
+            },
+            use_container_width=True,
+            hide_index=True,
+            key='employee_status_editor'
+        )
+        if st.button("💾 Save Employee Status", key='save_status'):
+            new_status = {row['Employee']: row['Status'] for _, row in edited.iterrows()}
+            if save_employee_status(new_status):
+                st.success("✅ Employee status saved.")
+                st.rerun()
+            else:
+                st.error("Could not save. Check Supabase connection or file permissions.")
+
+    # TAB 4: Employee Performance
+    with tab4:
         if selected_employee != 'All':
             st.header(f"👥 Performance Analysis - {selected_employee}")
             
@@ -1159,10 +1819,10 @@ def main():
                     st.metric("Days Active", f"{days_active}")
                 
                 # Comparison with all employees (same date range)
-                comparison_sales = sales_df[
-                    (sales_df['Date'].dt.date >= start_date) & 
-                    (sales_df['Date'].dt.date <= end_date)
-                ] if sales_df['Date'].notna().any() else sales_df
+                comparison_sales = work_df[
+                    (work_df['Date'].dt.date >= start_date) & 
+                    (work_df['Date'].dt.date <= end_date)
+                ] if work_df['Date'].notna().any() else work_df
                 
                 if len(comparison_sales) > len(filtered_sales):
                     st.subheader("📈 Performance Comparison")
@@ -1221,7 +1881,7 @@ def main():
                             title=f'Top Products - {selected_employee}'
                         )
                         fig.update_layout(height=400)
-                        st.plotly_chart(fig, use_container_width=True)
+                        render_chart(fig, dark_mode)
                 
                 # Employee's performance over time
                 st.subheader("📈 Sales Trend")
@@ -1236,7 +1896,7 @@ def main():
                     title=f'Monthly Sales Trend - {selected_employee}'
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
                 
         else:
             st.header("👥 Employee Performance Analysis")
@@ -1257,7 +1917,7 @@ def main():
                     color_continuous_scale='Blues'
                 )
                 fig.update_layout(height=500, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             with col2:
                 st.subheader("Top Employees by Average Transaction")
@@ -1272,7 +1932,7 @@ def main():
                     color_continuous_scale='Greens'
                 )
                 fig.update_layout(height=500, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             col1, col2 = st.columns(2)
             
@@ -1289,7 +1949,7 @@ def main():
                     color_continuous_scale='Oranges'
                 )
                 fig.update_layout(height=500, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                render_chart(fig, dark_mode)
             
             with col2:
                 st.subheader("Refund Rate Analysis")
@@ -1305,25 +1965,27 @@ def main():
                         color_continuous_scale='Reds'
                     )
                     fig.update_layout(height=400, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 else:
                     st.info("No refunds recorded for any employees")
             
             st.subheader("Complete Employee Performance Table")
-            display_df = employee_df.sort_values('Net_Sales_Sum', ascending=False).copy()
-            display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-            display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-            display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-            display_df['Refund_Rate'] = display_df['Refund_Rate'].apply(lambda x: f"{x:.2f}%")
-            display_df['Transaction_Count'] = display_df['Transaction_Count'].apply(lambda x: f"{int(x):,}")
-            
-            display_df.columns = ['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 
-                                'Total Gross Sales', 'Refunds Sum', 'Refund Rate']
-            
+            export_df = employee_df.sort_values('Net_Sales_Sum', ascending=False).copy()
+            export_df.columns = ['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']
+            col_export, _ = st.columns([1, 4])
+            with col_export:
+                st.download_button("📥 Export CSV", export_df.to_csv(index=False), "employee_performance.csv", "text/csv", help="Download table as CSV")
+            display_df = export_df.copy()
+            display_df['Total Net Sales'] = display_df['Total Net Sales'].apply(lambda x: f"£{float(x):,.2f}")
+            display_df['Average Sale'] = display_df['Average Sale'].apply(lambda x: f"£{float(x):,.2f}")
+            display_df['Total Gross Sales'] = display_df['Total Gross Sales'].apply(lambda x: f"£{float(x):,.2f}")
+            display_df['Refunds Sum'] = display_df['Refunds Sum'].apply(lambda x: f"£{float(x):,.2f}")
+            display_df['Refund Rate'] = display_df['Refund Rate'].apply(lambda x: f"{float(x):.2f}%")
+            display_df['Transaction Count'] = display_df['Transaction Count'].apply(lambda x: f"{int(float(x)):,}")
             st.dataframe(display_df, use_container_width=True, hide_index=True, height=400)
     
-    # TAB 4: Hourly Patterns
-    with tab4:
+    # TAB 5: Hourly Patterns
+    with tab5:
         if selected_employee != 'All':
             st.header(f"⏰ Hourly Sales Patterns - {selected_employee}")
         else:
@@ -1354,7 +2016,7 @@ def main():
                         title=title
                     )
                     fig.update_layout(height=400, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
@@ -1368,7 +2030,7 @@ def main():
                         title=title
                     )
                     fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 col1, col2 = st.columns(2)
                 
@@ -1385,7 +2047,7 @@ def main():
                         title=title
                     )
                     fig.update_layout(height=400, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     st.subheader("Peak Hours Analysis")
@@ -1398,7 +2060,10 @@ def main():
                     else:
                         st.info("No hourly data available for the selected filters.")
             else:
-                st.info("Hourly data not available. Please ensure Time column is properly formatted.")
+                st.info(
+                    "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
+                    "with values like `09:53:04` or `2023-07-14T09:53:04+00`. Check Debug: Data & Columns for column names."
+                )
         else:
             # Use pre-aggregated data when viewing all employees
             if hourly_df is not None:
@@ -1416,7 +2081,7 @@ def main():
                         color_continuous_scale='Purples'
                     )
                     fig.update_layout(height=400, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     st.subheader("Average Transaction by Hour")
@@ -1429,7 +2094,7 @@ def main():
                         title='Average Transaction Value by Hour'
                     )
                     fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 col1, col2 = st.columns(2)
                 
@@ -1444,7 +2109,7 @@ def main():
                         color_continuous_scale='Blues'
                     )
                     fig.update_layout(height=400, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     st.subheader("Peak Hours Analysis")
@@ -1454,8 +2119,8 @@ def main():
                         hour_str = f"{int(row['Hour']):02d}:00"
                         st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
     
-    # TAB 5: Product Patterns
-    with tab5:
+    # TAB 6: Product Patterns
+    with tab6:
         if selected_employee != 'All':
             st.header(f"🛍️ Product Patterns - {selected_employee}")
         else:
@@ -1561,7 +2226,7 @@ def main():
                                 title=title
                             )
                             fig.update_layout(height=600, showlegend=False)
-                            st.plotly_chart(fig, use_container_width=True)
+                            render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
                     
@@ -1581,7 +2246,7 @@ def main():
                                 title=title
                             )
                             fig.update_layout(height=600, showlegend=False)
-                            st.plotly_chart(fig, use_container_width=True)
+                            render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
                     
@@ -1603,7 +2268,7 @@ def main():
                                 title=title
                             )
                             fig.update_layout(height=600, showlegend=False)
-                            st.plotly_chart(fig, use_container_width=True)
+                            render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
                     
@@ -1636,7 +2301,7 @@ def main():
                         color_continuous_scale='Blues'
                     )
                     fig.update_layout(height=600, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     st.subheader("Top 20 Products by Transaction Count")
@@ -1651,7 +2316,7 @@ def main():
                         color_continuous_scale='Greens'
                     )
                     fig.update_layout(height=600, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 col1, col2 = st.columns(2)
                 
@@ -1668,7 +2333,7 @@ def main():
                         color_continuous_scale='Oranges'
                     )
                     fig.update_layout(height=600, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    render_chart(fig, dark_mode)
                 
                 with col2:
                     st.subheader("Product Performance Summary")
@@ -1678,8 +2343,8 @@ def main():
                     display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
                     st.dataframe(display_df, use_container_width=True, hide_index=True, height=600)
     
-    # TAB 6: Future Projections
-    with tab6:
+    # TAB 7: Future Projections
+    with tab7:
         if selected_employee != 'All':
             st.header(f"🔮 Future Sales Projections - {selected_employee}")
         else:
@@ -1698,10 +2363,10 @@ def main():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            forecast_days = st.number_input("Days to Forecast", min_value=7, max_value=365, value=30, step=7)
+            forecast_days = st.number_input("Days to Forecast", min_value=7, max_value=365, value=30, step=7, help="Number of days to project into the future")
         
         with col2:
-            forecast_months = st.number_input("Months to Forecast", min_value=1, max_value=12, value=6, step=1)
+            forecast_months = st.number_input("Months to Forecast", min_value=1, max_value=12, value=6, step=1, help="Number of months to project")
         
         with col3:
             forecast_method = st.selectbox(
@@ -1712,7 +2377,8 @@ def main():
                     "moving_avg": "Moving Average (Recommended)",
                     "conservative": "Conservative (No Growth)",
                     "exponential_smoothing": "Exponential Smoothing"
-                }[x]
+                }[x],
+                help="Moving Average uses seasonality; Conservative assumes no growth; Exponential Smoothing weights recent data more"
             )
         
         # Daily Forecast
@@ -1781,7 +2447,7 @@ def main():
                 height=500,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig, use_container_width=True)
+            render_chart(fig, dark_mode)
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -1795,6 +2461,8 @@ def main():
             with col4:
                 projected_total = forecast_df['Net_Sales'].sum()
                 st.metric(f"Projected Total ({forecast_days} days)", f"£{projected_total:,.2f}")
+        else:
+            st.info("📊 **Insufficient data for daily forecast.** Need at least 7 days of sales data. Try a wider date range.")
         
         # Monthly Forecast
         st.subheader("📆 Monthly Sales Forecast")
@@ -1851,7 +2519,7 @@ def main():
                 height=500,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig, use_container_width=True)
+            render_chart(fig, dark_mode)
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -1872,6 +2540,7 @@ def main():
             forecast_display['Month'] = forecast_display['Month'].dt.strftime('%Y-%m')
             forecast_display['Forecast'] = forecast_display['Forecast'].apply(lambda x: f"£{x:,.2f}")
             forecast_display.columns = ['Month', 'Projected Sales']
+            st.download_button("📥 Export forecast CSV", forecast_df[['Month', 'Forecast']].assign(Month=forecast_df['Month'].dt.strftime('%Y-%m')).to_csv(index=False), "monthly_forecast.csv", "text/csv", key="export_forecast", help="Download forecast as CSV")
             st.dataframe(forecast_display, use_container_width=True, hide_index=True)
             
             # Additional insights
@@ -1894,6 +2563,58 @@ def main():
                 st.write("⚠️ Actual results may vary due to external factors")
                 st.write("⚠️ Use forecasts as guidance, not guarantees")
                 st.write("⚠️ Shorter forecast periods are generally more accurate")
+        else:
+            st.info("📊 **Insufficient data for monthly forecast.** Need at least 3 months of sales data. Try a wider date range.")
+
+    # TAB 8: Best Team for Week
+    with tab8:
+        st.header("🏆 Best Team for Week")
+        st.caption("Recommended team based on daily and hourly performance. Uses only active employees.")
+        active_only = work_df[work_df['Employee'].isin(active_employees)] if active_employees else work_df
+        if len(active_only) == 0:
+            st.warning("No active employees. Mark employees as active in the Employee Status tab.")
+        else:
+            team_size = st.slider("Team size per day", min_value=1, max_value=10, value=3, help="Number of top performers to recommend per day")
+            lookback_days = st.number_input("Lookback period (days)", min_value=7, max_value=365, value=90, help="Use data from last N days for performance scoring")
+            if work_df['Date'].notna().any():
+                max_date = pd.Timestamp(work_df['Date'].max())
+                cutoff_date = max_date - timedelta(days=lookback_days)
+                score_df = active_only[pd.to_datetime(active_only['Date'], errors='coerce') >= cutoff_date].copy()
+            else:
+                score_df = active_only.copy()
+            if len(score_df) == 0:
+                st.warning("No data in the lookback period. Try a longer lookback or check date range.")
+            else:
+                if 'Day of the Week' not in score_df.columns or score_df['Day of the Week'].isna().all():
+                    score_df = score_df.copy()
+                    score_df['Day of the Week'] = pd.to_datetime(score_df['Date'], errors='coerce').dt.day_name()
+                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                by_day = score_df.groupby(['Employee', 'Day of the Week'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+                by_day = by_day.rename(columns={'Day of the Week': 'Day', 'sum': 'Total', 'mean': 'Avg', 'count': 'Count'})
+                recommendations = []
+                for day in day_order:
+                    day_data = by_day[by_day['Day'] == day]
+                    if len(day_data) == 0:
+                        recommendations.append({'Day': day, 'Recommended': '-', 'Est_Total': 0})
+                        continue
+                    top = day_data.nlargest(team_size, 'Total')
+                    names = ', '.join(top['Employee'].tolist())
+                    est_total = top['Total'].sum()
+                    recommendations.append({'Day': day, 'Recommended': names, 'Est_Total': est_total})
+                rec_df = pd.DataFrame(recommendations)
+                st.subheader("📊 Recommended team by day")
+                st.dataframe(rec_df, use_container_width=True, hide_index=True, column_config={
+                    'Day': st.column_config.TextColumn('Day'),
+                    'Recommended': st.column_config.TextColumn('Top performers'),
+                    'Est_Total': st.column_config.NumberColumn('Est. total sales (£)', format='£%.2f'),
+                })
+                if 'Hour' in score_df.columns and score_df['Hour'].notna().any():
+                    st.subheader("⏰ Peak hours by employee")
+                    by_hour = score_df.groupby(['Employee', 'Hour'])['Net_Sales'].sum().reset_index()
+                    emp_best_hour = by_hour.loc[by_hour.groupby('Employee')['Net_Sales'].idxmax()]
+                    emp_best_hour = emp_best_hour[['Employee', 'Hour']].sort_values('Employee')
+                    st.dataframe(emp_best_hour, use_container_width=True, hide_index=True)
+                st.info("💡 Recommendations are based on historical sales. Consider availability and preferences when scheduling.")
 
 if __name__ == "__main__":
     main()
