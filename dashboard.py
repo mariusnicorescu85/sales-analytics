@@ -183,6 +183,7 @@ CHART_THEME = dict(
     plot_bgcolor="rgba(0,0,0,0)",
     margin=dict(t=50, b=50, l=50, r=50),
     hovermode="x unified",
+    yaxis=dict(tickformat=".2f"),
 )
 CHART_CONFIG = {"displayModeBar": True, "displaylogo": False, "toImageButtonOptions": {"format": "png", "filename": "chart"}}
 
@@ -195,7 +196,7 @@ def apply_chart_theme(fig, dark=False):
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#e0e0e0"),
             xaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)", tickformat=".2f"),
         )
     return fig
 
@@ -204,6 +205,13 @@ def render_chart(fig, dark=False, height=None):
     fig = apply_chart_theme(fig, dark)
     if height:
         fig.update_layout(height=height)
+    # Format bar chart hover to 2 decimal places
+    for trace in fig.data:
+        if trace.type == 'bar':
+            if getattr(trace, 'orientation', 'v') == 'h':
+                trace.hovertemplate = '%{y}<br>%{x:,.2f}<extra></extra>'
+            else:
+                trace.hovertemplate = '%{x}<br>%{y:,.2f}<extra></extra>'
     st.plotly_chart(fig, use_container_width=True, config=CHART_CONFIG)
 
 # Custom CSS - applied dynamically based on dark mode
@@ -360,23 +368,40 @@ def inject_css(dark_mode=False):
     """, unsafe_allow_html=True)
 
 def _compute_employee_performance_from_sales(sales_df):
-    """Compute employee performance metrics from sales transaction data."""
-    if sales_df is None or len(sales_df) == 0 or 'Employee' not in sales_df.columns:
+    """
+    Compute employee performance metrics from sales transaction data.
+    Uses Commission_Employee (who gets commission) for attribution, not who processed.
+    """
+    if sales_df is None or len(sales_df) == 0:
         return None
-    agg = sales_df.groupby('Employee').agg(
-        Net_Sales_Sum=('Net_Sales', 'sum'),
-        Net_Sales_Mean=('Net_Sales', 'mean'),
-        Transaction_Count=('Net_Sales', 'count'),
-        Gross_Sales_Sum=('Gross_Sales', 'sum'),
-        Refunds_Sum=('Refunds', 'sum'),
-    ).reset_index()
+    # Use Commission_Employee if available (from expanded/by-commission view)
+    emp_col = 'Commission_Employee' if 'Commission_Employee' in sales_df.columns else 'Employee'
+    if emp_col not in sales_df.columns:
+        return None
+    weight_col = 'Transaction_Weight' if 'Transaction_Weight' in sales_df.columns else None
+    if weight_col:
+        agg = sales_df.groupby(emp_col).agg(
+            Net_Sales_Sum=('Net_Sales', 'sum'),
+            Gross_Sales_Sum=('Gross_Sales', 'sum'),
+            Refunds_Sum=('Refunds', 'sum'),
+            Transaction_Count=(weight_col, 'sum'),
+        ).reset_index()
+    else:
+        agg = sales_df.groupby(emp_col).agg(
+            Net_Sales_Sum=('Net_Sales', 'sum'),
+            Gross_Sales_Sum=('Gross_Sales', 'sum'),
+            Refunds_Sum=('Refunds', 'sum'),
+            Transaction_Count=('Net_Sales', 'count'),
+        ).reset_index()
+    agg['Net_Sales_Mean'] = np.where(agg['Transaction_Count'] > 0, agg['Net_Sales_Sum'] / agg['Transaction_Count'], 0)
     agg['Refunds_Sum'] = agg['Refunds_Sum'].abs()
     agg['Refund_Rate'] = np.where(
         agg['Gross_Sales_Sum'] > 0,
         agg['Refunds_Sum'] / agg['Gross_Sales_Sum'] * 100,
         0
     )
-    return agg[agg['Employee'].notna() & (agg['Employee'] != '')]
+    agg = agg.rename(columns={emp_col: 'Employee'})
+    return agg[agg['Employee'].notna() & (agg['Employee'].astype(str) != '')]
 
 
 def _compute_day_of_week_from_sales(sales_df):
@@ -454,6 +479,108 @@ def _compute_product_from_sales(sales_df):
     return df.reset_index(drop=True)
 
 
+def _parse_commission_recipients(comm_str):
+    """
+    Parse Commission column (format: 'Name1: amt1, Name2: amt2') into list of (name, amount).
+    Returns list of (normalized_name, commission_amount). Uses Employee as fallback when empty.
+    """
+    if not comm_str or not str(comm_str).strip() or str(comm_str).strip().lower() in ('nan', 'none', ''):
+        return []
+    parts = []
+    for segment in str(comm_str).split(','):
+        segment = segment.strip()
+        if ':' in segment:
+            name = segment.split(':', 1)[0].strip()
+            rest = segment.split(':', 1)[1].strip()
+            amt = _clean_currency(rest)
+            if name:
+                parts.append((normalize_employee_name(name), amt))
+    return parts
+
+
+def _expand_sales_by_commission(df):
+    """
+    Expand sales rows by commission recipients for correct attribution.
+    Sales/refunds are attributed to whoever receives commission, not who processed the transaction.
+    When Commission has multiple recipients, amounts are split proportionally by commission.
+    When Commission is empty, falls back to Employee (who processed).
+    Returns df with Commission_Employee, proportional Net_Sales/Gross_Sales/Refunds, Transaction_Weight.
+    """
+    if df is None or len(df) == 0:
+        return df
+    comm_col = next((c for c in df.columns if str(c).strip().lower() in ('commissions', 'commission')), None)
+    if comm_col is None and 'Employee' not in df.columns:
+        return df
+    emp_col = 'Employee' if 'Employee' in df.columns else None
+
+    rows = []
+    for idx, row in df.iterrows():
+        comm_str = row[comm_col] if comm_col and pd.notna(row.get(comm_col)) else ''
+        recipients = _parse_commission_recipients(comm_str)
+        emp_fallback = row[emp_col] if emp_col and pd.notna(row.get(emp_col)) and str(row.get(emp_col)).strip() else None
+
+        if not recipients:
+            # No commission data: attribute to Employee (who processed)
+            if emp_fallback and str(emp_fallback).strip() not in ('', 'nan'):
+                att_emp = normalize_employee_name(str(emp_fallback).strip())
+                new_row = row.to_dict()
+                new_row['Commission_Employee'] = att_emp
+                new_row['Transaction_Weight'] = 1.0
+                rows.append(new_row)
+            else:
+                # No employee either - keep row with null Commission_Employee
+                new_row = row.to_dict()
+                new_row['Commission_Employee'] = pd.NA
+                new_row['Transaction_Weight'] = 1.0
+                rows.append(new_row)
+            continue
+
+        # Split proportionally by commission amount
+        total_comm = sum(amt for _, amt in recipients)
+        if total_comm <= 0:
+            # Equal split when no valid commission amounts
+            n = len(recipients)
+            shares = [1.0 / n] * n
+        else:
+            shares = [amt / total_comm for _, amt in recipients]
+
+        net = row.get('Net_Sales', 0) or 0
+        gross = row.get('Gross_Sales', 0) or net
+        refund = row.get('Refunds', 0) or 0
+
+        for i, (name, _) in enumerate(recipients):
+            share = shares[i] if i < len(shares) else 0
+            new_row = row.to_dict()
+            new_row['Commission_Employee'] = name
+            new_row['Net_Sales'] = net * share
+            new_row['Gross_Sales'] = gross * share
+            new_row['Refunds'] = refund * share
+            new_row['Transaction_Weight'] = share
+            rows.append(new_row)
+
+    out = pd.DataFrame(rows)
+    # Preserve dtypes for key columns
+    for c in ['Date', 'Hour', 'Shop', 'Products', 'Transaction']:
+        if c in df.columns and c in out.columns:
+            out[c] = out[c]
+    return out
+
+
+def _count_items_per_transaction(products_str):
+    """Count line items from Products string (e.g. 'Prod A 1x10, Prod B 2x5' -> 3)."""
+    if pd.isna(products_str) or not isinstance(products_str, str):
+        return 0
+    count = 0
+    for item in [i.strip() for i in products_str.split(',') if i.strip()]:
+        if item.startswith('-') or 'x-' in item:
+            continue
+        if 'x' in item:
+            m = re.match(r'^.+?\s+(\d+)x', item)
+            if m:
+                count += int(m.group(1))
+    return count
+
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour, then refresh
 def load_employee_data():
     """Load employee performance data from file (if it exists)."""
@@ -516,7 +643,7 @@ def _normalize_supabase_columns(df):
             column_map[col] = 'Time'
         elif c == 'products':
             column_map[col] = 'Products'
-        elif c == 'commissions':
+        elif c in ('commissions', 'commission'):
             column_map[col] = 'Commissions'
     if column_map:
         df = df.rename(columns=column_map)
@@ -1028,7 +1155,7 @@ def main():
     # Data source indicator
     if data_source:
         if data_source == "Supabase":
-            st.sidebar.caption("☁️ **Data source:** Supabase")
+            st.sidebar.caption("☁️ **Data source:** Supabase — Employee, Commission, Refunds presented by attribution")
         else:
             st.sidebar.caption("📁 **Data source:** Local CSV files")
     
@@ -1053,6 +1180,11 @@ def main():
             if 'Refunds' in sales_df.columns:
                 raw_refunds_sum = sales_df['Refunds'].sum()
                 st.write(f"**Refunds sum:** {raw_refunds_sum:.2f}")
+            comm_col = next((c for c in sales_df.columns if str(c).strip().lower() in ('commissions', 'commission')), None)
+            if comm_col:
+                sample = sales_df[comm_col].dropna().head(3).tolist()
+                st.write(f"**Commission column:** {comm_col} | Sample: {sample}")
+                st.caption("Attribution from Supabase: Commission = who gets credit; Employee = who processed. Refunds follow Commission.")
             time_cols = [c for c in sales_df.columns if 'time' in str(c).lower() or str(c).lower() in ('timestamp', 'created_at')]
             hour_ok = 'Hour' in sales_df.columns and sales_df['Hour'].notna().any()
             if time_cols:
@@ -1075,22 +1207,36 @@ def main():
         work_df = sales_df[sales_df['Shop'] == selected_shop].copy()
     else:
         work_df = sales_df.copy()
+
+    # Expand by commission for correct attribution: sales/refunds go to who gets commission, not who processed
+    work_df_orig = work_df.copy()  # Keep for day/hour/product (avoid double-counting)
+    work_df_attributed = _expand_sales_by_commission(work_df)
+    if work_df_attributed is not None and len(work_df_attributed) > 0:
+        work_df = work_df_attributed
+
+    # Recompute employee performance from commission-attributed data (who gets credit, not who processed)
+    if len(work_df) > 0:
+        employee_df = _compute_employee_performance_from_sales(work_df)
+    # When a specific shop is selected, recompute day/hour/product from non-expanded data
+    if selected_shop != 'All Shops' and len(work_df_orig) > 0:
+        day_of_week_df = _compute_day_of_week_from_sales(work_df_orig)
+        hourly_df = _compute_hourly_from_sales(work_df_orig)
+        product_df = _compute_product_from_sales(work_df_orig)
     
     # Load employee active/inactive status
     employee_status = load_employee_status()
     
-    # Get unique employees, ensuring they're cleaned strings
-    if 'Employee' in work_df.columns:
-        unique_employees = work_df['Employee'].dropna().unique()
+    # Get unique employees from Commission_Employee (who gets credit) when available, else Employee
+    emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
+    if emp_col in work_df.columns:
+        unique_employees = work_df[emp_col].dropna().unique()
         unique_employees = [str(emp).strip() for emp in unique_employees if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
         unique_employees = sorted(list(set(unique_employees)))
-        # Separate active and inactive for display
-        active_employees = [e for e in unique_employees if is_employee_active(e, employee_status)]
-        inactive_employees = [e for e in unique_employees if not is_employee_active(e, employee_status)]
     else:
         unique_employees = []
-        active_employees = []
-        inactive_employees = []
+    # Separate active and inactive for display
+    active_employees = [e for e in unique_employees if is_employee_active(e, employee_status)]
+    inactive_employees = [e for e in unique_employees if not is_employee_active(e, employee_status)]
     
     # Employee filter: show active first, then inactive with label
     show_inactive_in_filter = st.sidebar.checkbox("Include inactive employees in filter", value=True, help="Uncheck to hide inactive employees from the Employee dropdown")
@@ -1178,16 +1324,14 @@ def main():
         end_date = None
     
     if selected_employee != 'All':
-        # More flexible employee matching - handle case and whitespace variations
-        # Clean employee names for comparison
-        if 'Employee' in filtered_sales.columns:
+        # Filter by Commission_Employee (who gets credit) when available, else Employee (who processed)
+        filter_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+        if filter_col in filtered_sales.columns:
             # First try exact match (with stripped whitespace)
-            employee_mask = filtered_sales['Employee'].astype(str).str.strip() == selected_employee.strip()
-            
+            employee_mask = filtered_sales[filter_col].astype(str).str.strip() == selected_employee.strip()
             # If no exact match, try case-insensitive
             if not employee_mask.any():
-                employee_mask = filtered_sales['Employee'].astype(str).str.strip().str.lower() == selected_employee.strip().lower()
-            
+                employee_mask = filtered_sales[filter_col].astype(str).str.strip().str.lower() == selected_employee.strip().lower()
             filtered_sales = filtered_sales[employee_mask].copy()
             
             # Ensure Day of Week column is available in filtered data
@@ -1197,22 +1341,22 @@ def main():
             # Debug info if no data found
             if len(filtered_sales) == 0:
                 # Check what we have before employee filtering
+                check_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
                 if start_date is not None and end_date is not None:
                     date_filtered = work_df[
                         (work_df['Date'].dt.date >= start_date) & 
                         (work_df['Date'].dt.date <= end_date)
                     ]
                     before_filter_count = len(date_filtered)
-                    employees_in_range = date_filtered['Employee'].dropna().unique()
+                    employees_in_range = date_filtered[check_col].dropna().unique() if check_col in date_filtered.columns else []
                 else:
                     before_filter_count = len(work_df)
-                    employees_in_range = work_df['Employee'].dropna().unique()
-                
+                    employees_in_range = work_df[check_col].dropna().unique() if check_col in work_df.columns else []
                 # Check if employee exists at all
-                all_employees = work_df['Employee'].dropna().unique()
+                all_employees = work_df[check_col].dropna().unique() if check_col in work_df.columns else []
                 employee_exists = any(
                     str(emp).strip().lower() == selected_employee.strip().lower() 
-                    for emp in work_df['Employee'].dropna().unique()
+                    for emp in all_employees
                 )
                 
                 if employee_exists:
@@ -1220,7 +1364,7 @@ def main():
                 else:
                     st.sidebar.warning(f"⚠️ '{selected_employee}' not found in data. Check spelling or try a different employee.")
         else:
-            st.error("Employee column not found in data!")
+            st.error("Employee/Commission column not found in data!")
             filtered_sales = pd.DataFrame()  # Empty DataFrame
     
     # Employee-specific header
@@ -1233,12 +1377,13 @@ def main():
             st.warning(f"⚠️ **No data found for: {selected_employee}** | 📅 **Date Range:** {date_range_str}")
             # Show available employees for debugging
             with st.expander("🔍 Debug: Available Employees"):
-                all_employees_list = sorted(work_df['Employee'].dropna().unique().tolist())
-                st.write(f"**Total employees in data:** {len(all_employees_list)}")
+                debug_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
+                all_employees_list = sorted(work_df[debug_emp_col].dropna().unique().tolist())
+                st.write(f"**Total employees in data (by commission):** {len(all_employees_list)}")
                 st.write("**First 20 employees:**")
                 for emp in all_employees_list[:20]:
-                    count = len(work_df[work_df['Employee'] == emp])
-                    st.write(f"- {emp} ({count} transactions)")
+                    count = len(work_df[work_df[debug_emp_col] == emp])
+                    st.write(f"- {emp} ({count} attributed rows)")
                 if len(all_employees_list) > 20:
                     st.write(f"... and {len(all_employees_list) - 20} more")
     
@@ -1300,7 +1445,8 @@ def main():
     # Calculate metrics
     total_net_sales = filtered_sales['Net_Sales'].sum()
     total_gross_sales = filtered_sales['Gross_Sales'].sum()
-    total_transactions = len(filtered_sales)
+    total_transactions = filtered_sales['Transaction_Weight'].sum() if 'Transaction_Weight' in filtered_sales.columns else len(filtered_sales)
+    total_transactions = int(round(total_transactions))  # Weight sum may be float
     avg_transaction = total_net_sales / total_transactions if total_transactions > 0 else 0
     
     # Calculate refunds - ensure column exists and handle properly
@@ -1326,7 +1472,8 @@ def main():
     else:
         total_refunds = 0
     
-    unique_employees_count = filtered_sales['Employee'].nunique()
+    att_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+    unique_employees_count = filtered_sales[att_col].nunique() if att_col in filtered_sales.columns else 0
 
     # KPI trend: period-over-period comparison (vs prior period of same length)
     prev_net_sales = prev_avg_transaction = prev_transactions = prev_refunds = None
@@ -1339,10 +1486,12 @@ def main():
             (work_df['Date'].dt.date <= prev_end_date)
         ]
         if selected_employee != 'All':
-            prev_sales = prev_sales[prev_sales['Employee'].astype(str).str.strip() == selected_employee.strip()]
+            prev_col = 'Commission_Employee' if 'Commission_Employee' in prev_sales.columns else 'Employee'
+            if prev_col in prev_sales.columns:
+                prev_sales = prev_sales[prev_sales[prev_col].astype(str).str.strip() == selected_employee.strip()]
         if len(prev_sales) > 0:
             prev_net_sales = prev_sales['Net_Sales'].sum()
-            prev_transactions = len(prev_sales)
+            prev_transactions = int(round(prev_sales['Transaction_Weight'].sum())) if 'Transaction_Weight' in prev_sales.columns else len(prev_sales)
             prev_avg_transaction = prev_net_sales / prev_transactions if prev_transactions > 0 else 0
             prev_refunds = abs(prev_sales['Refunds'].sum()) if 'Refunds' in prev_sales.columns else 0
 
@@ -1365,14 +1514,17 @@ def main():
             (work_df['Date'].dt.date <= end_date)
         ] if work_df['Date'].notna().any() else work_df
         
-        all_avg_transaction = comparison_sales['Net_Sales'].sum() / len(comparison_sales) if len(comparison_sales) > 0 else 0
+        comp_tx = comparison_sales['Transaction_Weight'].sum() if 'Transaction_Weight' in comparison_sales.columns else len(comparison_sales)
+        all_avg_transaction = comparison_sales['Net_Sales'].sum() / comp_tx if comp_tx > 0 else 0
         all_total_sales = comparison_sales['Net_Sales'].sum()
         employee_share = (total_net_sales / all_total_sales * 100) if all_total_sales > 0 else 0
         
         col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
         
         with col1:
-            delta = total_net_sales - (all_total_sales / comparison_sales['Employee'].nunique()) if comparison_sales['Employee'].nunique() > 0 else None
+            comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in comparison_sales.columns else 'Employee'
+            n_emp = comparison_sales[comp_emp_col].nunique() if comp_emp_col in comparison_sales.columns else 0
+            delta = total_net_sales - (all_total_sales / n_emp) if n_emp > 0 else None
             st.metric("Total Net Sales", f"£{total_net_sales:,.2f}", 
                      delta=f"{employee_share:.1f}% of total" if employee_share > 0 else None)
         with col2:
@@ -1468,11 +1620,11 @@ def main():
     st.divider()
 
     # Quick navigation hint
-    tab_names = ["Daily Trends", "Day of Week", "Employee Status", "Employee Performance", "Hourly Patterns", "Product Patterns", "Future Projections", "Best Team"]
+    tab_names = ["Daily Trends", "Day of Week", "Employee Status", "Employee Performance", "Hourly Patterns", "Product Patterns", "Future Projections", "Best Team", "Trends & Seasonality", "Shop Comparison", "Transaction Analytics", "Advanced Insights"]
     st.caption("📑 **Sections:** " + " • ".join(tab_names))
 
     # Create tabs for different analyses (Employee Status early for visibility)
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
         "📅 Daily Trends", 
         "📆 Day of Week Analysis", 
         "👤 Employee Status",
@@ -1480,7 +1632,11 @@ def main():
         "⏰ Hourly Patterns", 
         "🛍️ Product Patterns", 
         "🔮 Future Projections",
-        "🏆 Best Team for Week"
+        "🏆 Best Team for Week",
+        "📈 Trends & Seasonality",
+        "🏪 Shop Comparison",
+        "🛒 Transaction Analytics",
+        "🔍 Advanced Insights"
     ])
     
     # TAB 1: Daily Trends Analysis
@@ -1880,7 +2036,7 @@ def main():
                             labels={'x': 'Number of Sales', 'y': 'Product'},
                             title=f'Top Products - {selected_employee}'
                         )
-                        fig.update_layout(height=400)
+                        fig.update_layout(height=400, xaxis_tickformat=".2f")
                         render_chart(fig, dark_mode)
                 
                 # Employee's performance over time
@@ -1916,7 +2072,7 @@ def main():
                     color='Net_Sales_Sum',
                     color_continuous_scale='Blues'
                 )
-                fig.update_layout(height=500, showlegend=False)
+                fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
                 render_chart(fig, dark_mode)
             
             with col2:
@@ -1931,7 +2087,7 @@ def main():
                     color='Net_Sales_Mean',
                     color_continuous_scale='Greens'
                 )
-                fig.update_layout(height=500, showlegend=False)
+                fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
                 render_chart(fig, dark_mode)
             
             col1, col2 = st.columns(2)
@@ -1948,7 +2104,7 @@ def main():
                     color='Transaction_Count',
                     color_continuous_scale='Oranges'
                 )
-                fig.update_layout(height=500, showlegend=False)
+                fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
                 render_chart(fig, dark_mode)
             
             with col2:
@@ -1964,7 +2120,7 @@ def main():
                         color='Refund_Rate',
                         color_continuous_scale='Reds'
                     )
-                    fig.update_layout(height=400, showlegend=False)
+                    fig.update_layout(height=400, showlegend=False, xaxis_tickformat=".2f")
                     render_chart(fig, dark_mode)
                 else:
                     st.info("No refunds recorded for any employees")
@@ -2225,7 +2381,7 @@ def main():
                                 color_continuous_scale='Blues',
                                 title=title
                             )
-                            fig.update_layout(height=600, showlegend=False)
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
                             render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
@@ -2245,7 +2401,7 @@ def main():
                                 color_continuous_scale='Greens',
                                 title=title
                             )
-                            fig.update_layout(height=600, showlegend=False)
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
                             render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
@@ -2267,7 +2423,7 @@ def main():
                                 color_continuous_scale='Oranges',
                                 title=title
                             )
-                            fig.update_layout(height=600, showlegend=False)
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
                             render_chart(fig, dark_mode)
                         else:
                             st.info("No product data available for the selected filters.")
@@ -2615,6 +2771,279 @@ def main():
                     emp_best_hour = emp_best_hour[['Employee', 'Hour']].sort_values('Employee')
                     st.dataframe(emp_best_hour, use_container_width=True, hide_index=True)
                 st.info("💡 Recommendations are based on historical sales. Consider availability and preferences when scheduling.")
+
+    # TAB 9: Trends & Seasonality
+    with tab9:
+        st.header("📈 Trends & Seasonality")
+        if len(filtered_sales) == 0:
+            st.warning("No data for the selected filters.")
+        else:
+            with st.expander("📊 Month-over-Month & Year-over-Year", expanded=True):
+                monthly = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M')).agg(
+                    Net_Sales=('Net_Sales', 'sum'),
+                    Transactions=('Net_Sales', 'count'),
+                    Avg_Sale=('Net_Sales', 'mean')
+                ).reset_index()
+                monthly['Month'] = monthly['Date'].astype(str)
+                monthly['MoM_Change'] = monthly['Net_Sales'].pct_change() * 100
+                monthly['YoY_Change'] = monthly['Net_Sales'].pct_change(periods=12) * 100
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig = px.bar(monthly, x='Month', y='Net_Sales', labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Sales')
+                    fig.update_layout(height=350)
+                    render_chart(fig, dark_mode)
+                with col2:
+                    if monthly['MoM_Change'].notna().any():
+                        fig = px.line(monthly, x='Month', y='MoM_Change', markers=True, labels={'MoM_Change': 'MoM % Change'}, title='Month-over-Month % Change')
+                        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                        fig.update_layout(height=350)
+                        render_chart(fig, dark_mode)
+                st.dataframe(monthly[['Month', 'Net_Sales', 'Transactions', 'Avg_Sale', 'MoM_Change', 'YoY_Change']].round(2), use_container_width=True, hide_index=True)
+            with st.expander("📉 Sales Velocity & Best/Worst Periods", expanded=True):
+                daily = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
+                daily['Date'] = pd.to_datetime(daily['Date'])
+                avg_daily = daily['Net_Sales'].mean()
+                weekly = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('W'))['Net_Sales'].sum()
+                st.metric("Average Daily Sales", f"£{avg_daily:,.2f}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    best = daily.loc[daily['Net_Sales'].idxmax()]
+                    worst = daily.loc[daily['Net_Sales'].idxmin()]
+                    st.write(f"**Best Day:** {best['Date'].strftime('%Y-%m-%d')} — £{best['Net_Sales']:,.2f}")
+                    st.write(f"**Worst Day:** {worst['Date'].strftime('%Y-%m-%d')} — £{worst['Net_Sales']:,.2f}")
+                with col2:
+                    if len(weekly) > 0:
+                        best_week = weekly.idxmax()
+                        worst_week = weekly.idxmin()
+                        st.write(f"**Best Week:** {best_week} — £{weekly.max():,.2f}")
+                        st.write(f"**Worst Week:** {worst_week} — £{weekly.min():,.2f}")
+                fig = px.histogram(daily, x='Net_Sales', nbins=30, labels={'Net_Sales': 'Daily Sales (£)'}, title='Distribution of Daily Sales')
+                fig.update_layout(height=300)
+                render_chart(fig, dark_mode)
+            with st.expander("📅 Seasonality", expanded=False):
+                seas_df = filtered_sales.copy()
+                if 'Day of the Week' not in seas_df.columns or seas_df['Day of the Week'].isna().all():
+                    seas_df['Day of the Week'] = pd.to_datetime(seas_df['Date'], errors='coerce').dt.day_name()
+                monthly_by_dow = seas_df.groupby([seas_df['Date'].dt.to_period('M'), 'Day of the Week'])['Net_Sales'].sum().reset_index()
+                monthly_by_dow['Month'] = monthly_by_dow['Date'].astype(str)
+                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                fig = px.bar(monthly_by_dow, x='Month', y='Net_Sales', color='Day of the Week', labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Sales by Day of Week', color_discrete_sequence=CHART_COLORWAY)
+                fig.update_layout(height=400, barmode='stack')
+                render_chart(fig, dark_mode)
+
+    # TAB 10: Shop Comparison
+    with tab10:
+        st.header("🏪 Shop Comparison")
+        if 'Shop' not in sales_df.columns or sales_df['Shop'].nunique() < 2:
+            st.info("Shop comparison requires data from multiple shops. Select 'All Shops' in the sidebar to see this analysis.")
+        else:
+            compare_df = work_df.copy()
+            if start_date and end_date and compare_df['Date'].notna().any():
+                compare_df = compare_df[(compare_df['Date'].dt.date >= start_date) & (compare_df['Date'].dt.date <= end_date)]
+            if selected_employee != 'All':
+                comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in compare_df.columns else 'Employee'
+                if comp_emp_col in compare_df.columns:
+                    compare_df = compare_df[compare_df[comp_emp_col].astype(str).str.strip() == selected_employee.strip()]
+            shops = compare_df['Shop'].dropna().unique().tolist()
+            if len(shops) < 2:
+                st.info("Filter to 'All Shops' and 'All' employees for full shop comparison.")
+            else:
+                shop_metrics = []
+                for shop in shops:
+                    s = compare_df[compare_df['Shop'] == shop]
+                    tx_count = int(round(s['Transaction_Weight'].sum())) if 'Transaction_Weight' in s.columns else len(s)
+                    shop_metrics.append({
+                        'Shop': shop,
+                        'Net Sales': s['Net_Sales'].sum(),
+                        'Transactions': tx_count,
+                        'Avg Sale': s['Net_Sales'].mean(),
+                        'Refunds': abs(s['Refunds'].sum()) if 'Refunds' in s.columns else 0,
+                    })
+                sm = pd.DataFrame(shop_metrics)
+                sm['Refund Rate %'] = np.where(sm['Net Sales'] > 0, sm['Refunds'] / (sm['Net Sales'] + sm['Refunds']) * 100, 0)
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig = px.bar(sm, x='Shop', y='Net Sales', color='Shop', labels={'Net Sales': 'Net Sales (£)'}, title='Total Sales by Shop')
+                    fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
+                    render_chart(fig, dark_mode)
+                with col2:
+                    fig = px.bar(sm, x='Shop', y='Avg Sale', color='Shop', labels={'Avg Sale': 'Avg Transaction (£)'}, title='Average Transaction by Shop')
+                    fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
+                    render_chart(fig, dark_mode)
+                st.dataframe(sm, use_container_width=True, hide_index=True, column_config={
+                    'Net Sales': st.column_config.NumberColumn('Net Sales (£)', format='£%.2f'),
+                    'Avg Sale': st.column_config.NumberColumn('Avg Sale (£)', format='£%.2f'),
+                    'Refunds': st.column_config.NumberColumn('Refunds (£)', format='£%.2f'),
+                })
+                monthly_by_shop = compare_df.groupby([compare_df['Date'].dt.to_period('M'), 'Shop'])['Net_Sales'].sum().reset_index()
+                monthly_by_shop['Month'] = monthly_by_shop['Date'].astype(str)
+                fig = px.line(monthly_by_shop, x='Month', y='Net_Sales', color='Shop', markers=True, labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Trend by Shop')
+                fig.update_layout(height=400)
+                render_chart(fig, dark_mode)
+
+    # TAB 11: Transaction Analytics
+    with tab11:
+        st.header("🛒 Transaction Analytics")
+        if len(filtered_sales) == 0:
+            st.warning("No data for the selected filters.")
+        else:
+            with st.expander("📦 Basket Size", expanded=True):
+                if 'Products' in filtered_sales.columns:
+                    tx_df = filtered_sales.copy()
+                    tx_df['Items_Count'] = tx_df['Products'].apply(_count_items_per_transaction)
+                    items = tx_df['Items_Count']
+                    avg_items = items.mean()
+                    st.metric("Average Items per Transaction", f"{avg_items:.1f}")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        nbins = min(20, max(1, int(items.max()) + 1))
+                        fig = px.histogram(tx_df, x='Items_Count', nbins=nbins, labels={'Items_Count': 'Items per Transaction'}, title='Basket Size Distribution')
+                        fig.update_layout(height=350)
+                        render_chart(fig, dark_mode)
+                    with col2:
+                        basket_emp_col = 'Commission_Employee' if 'Commission_Employee' in tx_df.columns else 'Employee'
+                        by_emp = tx_df.groupby(basket_emp_col)['Items_Count'].mean().reset_index().rename(columns={basket_emp_col: 'Employee'}).sort_values('Items_Count', ascending=False).head(15)
+                        if len(by_emp) > 0:
+                            fig = px.bar(by_emp, x='Items_Count', y='Employee', orientation='h', labels={'Items_Count': 'Avg Items'}, title='Avg Basket Size by Employee (by commission)')
+                            fig.update_layout(height=350, xaxis_tickformat=".2f")
+                            render_chart(fig, dark_mode)
+                else:
+                    st.info("Products column not found. Basket size requires product data.")
+            with st.expander("💰 Transaction Size Distribution", expanded=True):
+                bins = [0, 25, 50, 100, 200, 500, 1000, float('inf')]
+                labels_bin = ['£0-25', '£25-50', '£50-100', '£100-200', '£200-500', '£500-1000', '£1000+']
+                tx_dist_df = filtered_sales.copy()
+                tx_dist_df['Tx_Bucket'] = pd.cut(tx_dist_df['Net_Sales'], bins=bins, labels=labels_bin)
+                tx_dist = tx_dist_df.groupby('Tx_Bucket', observed=True).size().reset_index(name='Count')
+                fig = px.bar(tx_dist, x='Tx_Bucket', y='Count', labels={'Tx_Bucket': 'Transaction Size', 'Count': 'Count'}, title='Transaction Value Distribution')
+                fig.update_layout(height=350)
+                render_chart(fig, dark_mode)
+            with st.expander("↩️ Refund Patterns", expanded=True):
+                if 'Refunds' in filtered_sales.columns:
+                    refunds = filtered_sales[filtered_sales['Refunds'] != 0]
+                    if len(refunds) > 0:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            ref_emp_col = 'Commission_Employee' if 'Commission_Employee' in refunds.columns else 'Employee'
+                            refund_by_emp = refunds.groupby(ref_emp_col)['Refunds'].agg(['sum', 'count']).reset_index()
+                            refund_by_emp['Refund_Sum'] = refund_by_emp['sum'].abs()
+                            refund_by_emp = refund_by_emp.rename(columns={ref_emp_col: 'Employee'})
+                            refund_by_emp = refund_by_emp.sort_values('Refund_Sum', ascending=False).head(15)
+                            fig = px.bar(refund_by_emp, x='Refund_Sum', y='Employee', orientation='h', labels={'Refund_Sum': 'Refunds (£)'}, title='Refunds by Employee (by commission)')
+                            fig.update_layout(height=350, xaxis_tickformat=".2f")
+                            render_chart(fig, dark_mode)
+                        with col2:
+                            if 'Hour' in refunds.columns and refunds['Hour'].notna().any():
+                                refund_by_hour = refunds.groupby('Hour')['Refunds'].sum().abs().reset_index()
+                                fig = px.bar(refund_by_hour, x='Hour', y='Refunds', labels={'Refunds': 'Refunds (£)'}, title='Refunds by Hour of Day')
+                                fig.update_layout(height=350, yaxis_tickformat=".2f")
+                                render_chart(fig, dark_mode)
+                        if 'Products' in refunds.columns:
+                            st.subheader("Refunds by Product")
+                            refund_products = {}
+                            for _, row in refunds.iterrows():
+                                ps = row.get('Products', '')
+                                if pd.notna(ps) and isinstance(ps, str):
+                                    for item in ps.split(','):
+                                        if item.strip().startswith('-'):
+                                            refund_products[item.strip()] = refund_products.get(item.strip(), 0) + 1
+                            if refund_products:
+                                rp_df = pd.DataFrame([{'Product': k, 'Refund_Count': v} for k, v in sorted(refund_products.items(), key=lambda x: -x[1])[:15]])
+                                st.dataframe(rp_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No refunds in the selected period.")
+                else:
+                    st.info("Refunds column not found.")
+
+    # TAB 12: Advanced Insights
+    with tab12:
+        st.header("🔍 Advanced Insights")
+        if len(filtered_sales) == 0:
+            st.warning("No data for the selected filters.")
+        else:
+            with st.expander("🛍️ Product Mix & Share", expanded=True):
+                if product_df is not None and len(product_df) > 0:
+                    top = product_df.head(15)
+                    top['Share_%'] = top['Total_Sales'] / top['Total_Sales'].sum() * 100
+                    fig = px.pie(top, values='Share_%', names='Product', title='Product Mix (Top 15)', color_discrete_sequence=CHART_COLORWAY)
+                    fig.update_layout(height=400)
+                    fig.update_traces(textinfo='percent+label', texttemplate='%{percent:.2%}')
+                    render_chart(fig, dark_mode)
+                else:
+                    st.info("No product data available.")
+            with st.expander("👤 Product-Employee Affinity", expanded=True):
+                aff_emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+                if 'Products' in filtered_sales.columns and aff_emp_col in filtered_sales.columns:
+                    emp_product_sales = {}
+                    for _, row in filtered_sales.iterrows():
+                        emp = row.get(aff_emp_col)
+                        ps = row.get('Products', '')
+                        if pd.isna(emp) or pd.isna(ps) or not isinstance(ps, str):
+                            continue
+                        for item in [i.strip() for i in ps.split(',') if i.strip()]:
+                            if item.startswith('-') or 'x-' in item:
+                                continue
+                            if 'x' in item:
+                                m = re.match(r'^(.+?)\s+(\d+)x([\d.,£]+)$', item)
+                                if m:
+                                    name, qty, price_str = m.group(1).strip(), int(m.group(2)), m.group(3)
+                                    pm = re.search(r'(\d+\.?\d*)', price_str.replace('£', '').replace(',', ''))
+                                    if pm and 0 < float(pm.group(1)) <= 50000:
+                                        key = (emp, name)
+                                        emp_product_sales[key] = emp_product_sales.get(key, 0) + float(pm.group(1)) * qty
+                    if emp_product_sales:
+                        ep_df = pd.DataFrame([{'Employee': k[0], 'Product': k[1], 'Sales': v} for k, v in emp_product_sales.items()])
+                        top_combos = ep_df.nlargest(20, 'Sales')
+                        fig = px.bar(top_combos, x='Sales', y='Product', color='Employee', orientation='h', labels={'Sales': 'Sales (£)'}, title='Top Product-Employee Combinations')
+                        fig.update_layout(height=500, barmode='stack', xaxis_tickformat=".2f")
+                        render_chart(fig, dark_mode)
+                    else:
+                        st.info("No product-employee data.")
+                else:
+                    st.info("Products and Employee columns required.")
+            with st.expander("📊 Employee Consistency", expanded=True):
+                if employee_df is not None and 'Employee' in filtered_sales.columns:
+                    emp_daily = filtered_sales.groupby(['Employee', filtered_sales['Date'].dt.date])['Net_Sales'].sum().reset_index()
+                    emp_std = emp_daily.groupby('Employee')['Net_Sales'].agg(['mean', 'std', 'count']).reset_index()
+                    emp_std = emp_std[emp_std['count'] >= 5]
+                    emp_std['CV'] = np.where(emp_std['mean'] > 0, emp_std['std'] / emp_std['mean'] * 100, 0)
+                    emp_std = emp_std.sort_values('CV')
+                    if len(emp_std) > 0:
+                        st.caption("Most consistent = lowest coefficient of variation (CV). Lower CV = more predictable daily performance.")
+                        fig = px.bar(emp_std.head(15), x='Employee', y='CV', labels={'CV': 'CV %'}, title='Employee Consistency (Lower = More Consistent)')
+                        fig.update_layout(height=350, yaxis_tickformat=".2f")
+                        render_chart(fig, dark_mode)
+                        st.dataframe(emp_std[['Employee', 'mean', 'std', 'CV']].round(2), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Need employee data.")
+            with st.expander("⏰ Peak Hours by Employee", expanded=True):
+                if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any() and 'Employee' in filtered_sales.columns:
+                    by_emp_hour = filtered_sales.groupby(['Employee', 'Hour'])['Net_Sales'].sum().reset_index()
+                    emp_best = by_emp_hour.loc[by_emp_hour.groupby('Employee')['Net_Sales'].idxmax()]
+                    emp_best = emp_best[['Employee', 'Hour']].sort_values('Employee')
+                    st.dataframe(emp_best, use_container_width=True, hide_index=True, column_config={'Hour': st.column_config.NumberColumn('Peak Hour', format='%d:00')})
+                else:
+                    st.info("Hour and Employee columns required.")
+            with st.expander("⚠️ Anomaly Detection", expanded=True):
+                daily = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
+                if len(daily) >= 7:
+                    mean = daily['Net_Sales'].mean()
+                    std = daily['Net_Sales'].std()
+                    if std > 0:
+                        daily['Z_Score'] = (daily['Net_Sales'] - mean) / std
+                        anomalies = daily[daily['Z_Score'].abs() > 2]
+                        if len(anomalies) > 0:
+                            st.caption("Days with Z-score > 2 (unusually high or low sales).")
+                            fig = px.scatter(daily, x='Date', y='Net_Sales', color='Z_Score', color_continuous_scale='RdBu_r', labels={'Net_Sales': 'Net Sales (£)'}, title='Daily Sales with Anomalies Highlighted')
+                            fig.update_layout(height=350)
+                            render_chart(fig, dark_mode)
+                            st.dataframe(anomalies[['Date', 'Net_Sales', 'Z_Score']].round(2), use_container_width=True, hide_index=True)
+                        else:
+                            st.info("No significant anomalies detected (Z-score > 2).")
+                    else:
+                        st.info("Insufficient variance for anomaly detection.")
+                else:
+                    st.info("Need at least 7 days of data for anomaly detection.")
 
 if __name__ == "__main__":
     main()
