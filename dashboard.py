@@ -1849,8 +1849,8 @@ def main():
                     display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
                     display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
                     st.dataframe(display_df, use_container_width=True, hide_index=True)
-                else:
-                    st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
+            else:
+                st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
     # TAB 3: Employee Status (active/inactive) - placed early for visibility
     with tab3:
