@@ -1314,11 +1314,13 @@ def main():
             (work_df['Date'].dt.date >= start_date) & 
             (work_df['Date'].dt.date <= end_date)
         ]
+        date_filtered_sales = filtered_sales.copy()  # All employees in date range (before employee filter)
         
         # Display selected range
         st.sidebar.caption(f"📆 {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}")
     else:
         filtered_sales = work_df
+        date_filtered_sales = work_df.copy()
         # Set default dates if no date data
         start_date = None
         end_date = None
@@ -1422,6 +1424,12 @@ def main():
         <span class="filter-badge">📊 {len(filtered_sales):,} transactions</span>
     </div>
     """, unsafe_allow_html=True)
+
+    # Whether date range is "All Time" (no date filter or full range) - used by analytics tabs
+    if start_date is None and end_date is None:
+        date_range_is_all_time = True
+    else:
+        date_range_is_all_time = (start_date == min_date and end_date == max_date)
 
     # Empty state when no data
     if len(filtered_sales) == 0:
@@ -1741,9 +1749,9 @@ def main():
         else:
             st.header("📆 Day of Week Analysis")
         
-        # Use pre-aggregated data only if viewing all employees AND data exists
-        # Otherwise, always calculate from filtered_sales to show employee-specific patterns
-        if selected_employee == 'All' and day_of_week_df is not None:
+        # Use pre-aggregated data only if viewing all employees AND "All Time" date range AND data exists
+        # Otherwise, calculate from filtered_sales to respect date range and employee filters
+        if selected_employee == 'All' and date_range_is_all_time and day_of_week_df is not None:
             # Use pre-aggregated data when viewing all employees
             col1, col2 = st.columns(2)
             
@@ -2057,12 +2065,15 @@ def main():
         else:
             st.header("👥 Employee Performance Analysis")
         
-        if employee_df is not None:
+        # Use date-filtered employee data when a date range is selected
+        emp_perf_df = employee_df if date_range_is_all_time and employee_df is not None else _compute_employee_performance_from_sales(date_filtered_sales)
+        
+        if emp_perf_df is not None:
             col1, col2 = st.columns(2)
             
             with col1:
                 st.subheader("Top Employees by Total Sales")
-                top_employees = employee_df.nlargest(15, 'Net_Sales_Sum')
+                top_employees = emp_perf_df.nlargest(15, 'Net_Sales_Sum')
                 fig = px.bar(
                     top_employees,
                     x='Net_Sales_Sum',
@@ -2077,7 +2088,7 @@ def main():
             
             with col2:
                 st.subheader("Top Employees by Average Transaction")
-                top_avg = employee_df[employee_df['Transaction_Count'] >= 10].nlargest(15, 'Net_Sales_Mean')
+                top_avg = emp_perf_df[emp_perf_df['Transaction_Count'] >= 10].nlargest(15, 'Net_Sales_Mean')
                 fig = px.bar(
                     top_avg,
                     x='Net_Sales_Mean',
@@ -2094,7 +2105,7 @@ def main():
             
             with col1:
                 st.subheader("Transaction Volume by Employee")
-                top_volume = employee_df.nlargest(15, 'Transaction_Count')
+                top_volume = emp_perf_df.nlargest(15, 'Transaction_Count')
                 fig = px.bar(
                     top_volume,
                     x='Transaction_Count',
@@ -2109,7 +2120,7 @@ def main():
             
             with col2:
                 st.subheader("Refund Rate Analysis")
-                refund_analysis = employee_df[employee_df['Refund_Rate'] > 0].sort_values('Refund_Rate', ascending=False)
+                refund_analysis = emp_perf_df[emp_perf_df['Refund_Rate'] > 0].sort_values('Refund_Rate', ascending=False)
                 if len(refund_analysis) > 0:
                     fig = px.bar(
                         refund_analysis.head(10),
@@ -2126,7 +2137,7 @@ def main():
                     st.info("No refunds recorded for any employees")
             
             st.subheader("Complete Employee Performance Table")
-            export_df = employee_df.sort_values('Net_Sales_Sum', ascending=False).copy()
+            export_df = emp_perf_df.sort_values('Net_Sales_Sum', ascending=False).copy()
             export_df.columns = ['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']
             col_export, _ = st.columns([1, 4])
             with col_export:
@@ -2147,9 +2158,9 @@ def main():
         else:
             st.header("⏰ Hourly Sales Patterns")
         
-        # Use pre-aggregated data only if no employee filter is applied
-        # Otherwise, calculate from filtered_sales to show employee-specific patterns
-        if selected_employee != 'All' or 'Hour' not in filtered_sales.columns or hourly_df is None:
+        # Use pre-aggregated data only if no employee filter AND "All Time" date range
+        # Otherwise, calculate from filtered_sales to respect date range and employee filters
+        if selected_employee != 'All' or not date_range_is_all_time or 'Hour' not in filtered_sales.columns or hourly_df is None:
             # Calculate from filtered data (supports employee filtering)
             if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
                 hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
@@ -2282,9 +2293,9 @@ def main():
         else:
             st.header("🛍️ Product Patterns Analysis")
         
-        # Use pre-aggregated data only if no employee filter is applied
-        # Otherwise, calculate from filtered_sales to show employee-specific patterns
-        if selected_employee != 'All' or product_df is None:
+        # Use pre-aggregated data only if no employee filter AND "All Time" date range
+        # Otherwise, calculate from filtered_sales to respect date range and employee filters
+        if selected_employee != 'All' or not date_range_is_all_time or product_df is None:
             # Calculate from filtered data (supports employee filtering)
             if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
                 # Extract product sales from filtered data
