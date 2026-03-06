@@ -1749,179 +1749,106 @@ def main():
         else:
             st.header("📆 Day of Week Analysis")
         
-        # Use pre-aggregated data only if viewing all employees AND "All Time" date range AND data exists
-        # Otherwise, calculate from filtered_sales to respect date range and employee filters
-        if selected_employee == 'All' and date_range_is_all_time and day_of_week_df is not None:
-            # Use pre-aggregated data when viewing all employees
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Sales by Day of Week")
-                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                day_of_week_df_ordered = day_of_week_df.set_index('Day').reindex([d for d in day_order if d in day_of_week_df['Day'].values])
-                
-                fig = px.bar(
-                    day_of_week_df_ordered,
-                    x=day_of_week_df_ordered.index,
-                    y='Net_Sales_Sum',
-                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'index': 'Day of Week'},
-                    color='Net_Sales_Sum',
-                    color_continuous_scale='Blues'
-                )
-                fig.update_layout(height=400, showlegend=False)
-                render_chart(fig, dark_mode)
-            
-            with col2:
-                st.subheader("Average Transaction by Day")
-                fig = px.bar(
-                    day_of_week_df_ordered,
-                    x=day_of_week_df_ordered.index,
-                    y='Net_Sales_Mean',
-                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'index': 'Day of Week'},
-                    color='Net_Sales_Mean',
-                    color_continuous_scale='Greens'
-                )
-                fig.update_layout(height=400, showlegend=False)
-                render_chart(fig, dark_mode)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Transaction Count by Day")
-                fig = px.bar(
-                    day_of_week_df_ordered,
-                    x=day_of_week_df_ordered.index,
-                    y='Transaction_Count',
-                    labels={'Transaction_Count': 'Number of Transactions', 'index': 'Day of Week'},
-                    color='Transaction_Count',
-                    color_continuous_scale='Oranges'
-                )
-                fig.update_layout(height=400, showlegend=False)
-                render_chart(fig, dark_mode)
-            
-            with col2:
-                st.subheader("Day of Week Summary Table")
-                display_df = day_of_week_df_ordered.reset_index()
-                display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-                display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+        # Always calculate from filtered_sales to respect date range and employee filters
+        if len(filtered_sales) == 0:
+            st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
         else:
-            # Calculate from filtered data (supports employee filtering)
-            if len(filtered_sales) == 0:
-                st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
-            else:
-                # Make a copy to work with
-                work_df = filtered_sales.copy()
-                
-                # Ensure Day of Week column exists - calculate from Date if needed
-                if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
-                    if 'Date' in work_df.columns and work_df['Date'].notna().any():
-                        work_df['Day of the Week'] = work_df['Date'].dt.day_name()
-                    else:
-                        st.error("No date data available to calculate day of week.")
-                        st.stop()
-                
-                day_col = 'Day of the Week'
-                
-                # Filter out rows with null day of week
-                valid_sales = work_df[work_df[day_col].notna()].copy()
-                
-                if len(valid_sales) > 0:
-                    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                    
-                    # Group by day of week
-                    day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
-                    day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
-                    
-                    # Get gross sales
-                    gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
-                    gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
-                    day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
-                    day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
-                    
-                    # Reindex to ensure all days are in order and fill missing days
-                    day_sales = day_sales.set_index('Day')
-                    for day in day_order:
-                        if day not in day_sales.index:
-                            day_sales.loc[day] = [0, 0, 0, 0, 0]
-                    
-                    day_sales = day_sales.reindex(day_order)
-                    
-                    # Reset index to make Day a column for easier plotting
-                    day_sales_plot = day_sales.reset_index()
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
-                        st.subheader("Sales by Day of Week")
-                        fig = px.bar(
-                            day_sales_plot,
-                            x='Day',
-                            y='Net_Sales_Sum',
-                            labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Day': 'Day of Week'},
-                            color='Net_Sales_Sum',
-                            color_continuous_scale='Blues',
-                            title=title
-                        )
-                        fig.update_layout(
-                            height=400, 
-                            showlegend=False,
-                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                        )
-                        render_chart(fig, dark_mode)
-                    
-                    with col2:
-                        title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
-                        st.subheader("Average Transaction by Day")
-                        fig = px.bar(
-                            day_sales_plot,
-                            x='Day',
-                            y='Net_Sales_Mean',
-                            labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
-                            color='Net_Sales_Mean',
-                            color_continuous_scale='Greens',
-                            title=title
-                        )
-                        fig.update_layout(
-                            height=400, 
-                            showlegend=False,
-                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                        )
-                        render_chart(fig, dark_mode)
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
-                        st.subheader("Transaction Count by Day")
-                        fig = px.bar(
-                            day_sales_plot,
-                            x='Day',
-                            y='Transaction_Count',
-                            labels={'Transaction_Count': 'Number of Transactions', 'Day': 'Day of Week'},
-                            color='Transaction_Count',
-                            color_continuous_scale='Oranges',
-                            title=title
-                        )
-                        fig.update_layout(
-                            height=400, 
-                            showlegend=False,
-                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                        )
-                        render_chart(fig, dark_mode)
-                    
-                    with col2:
-                        st.subheader("Day of Week Summary Table")
-                        display_df = day_sales_plot.copy()
-                        display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                        display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-                        display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                        display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
-                        display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
-                        display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
-                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+            # Make a copy to work with
+            work_df = filtered_sales.copy()
+            # Ensure Day of Week column exists - calculate from Date if needed
+            if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
+                if 'Date' in work_df.columns and work_df['Date'].notna().any():
+                    work_df['Day of the Week'] = work_df['Date'].dt.day_name()
+                else:
+                    st.error("No date data available to calculate day of week.")
+                    st.stop()
+            day_col = 'Day of the Week'
+            # Filter out rows with null day of week
+            valid_sales = work_df[work_df[day_col].notna()].copy()
+            if len(valid_sales) > 0:
+                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                # Group by day of week
+                day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
+                day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
+                # Get gross sales
+                gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
+                gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
+                day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
+                day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
+                # Reindex to ensure all days are in order and fill missing days
+                day_sales = day_sales.set_index('Day')
+                for day in day_order:
+                    if day not in day_sales.index:
+                        day_sales.loc[day] = [0, 0, 0, 0, 0]
+                day_sales = day_sales.reindex(day_order)
+                # Reset index to make Day a column for easier plotting
+                day_sales_plot = day_sales.reset_index()
+                col1, col2 = st.columns(2)
+                with col1:
+                    title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
+                    st.subheader("Sales by Day of Week")
+                    fig = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Net_Sales_Sum',
+                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Day': 'Day of Week'},
+                        color='Net_Sales_Sum',
+                        color_continuous_scale='Blues',
+                        title=title
+                    )
+                    fig.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                    )
+                    render_chart(fig, dark_mode)
+                with col2:
+                    title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
+                    st.subheader("Average Transaction by Day")
+                    fig = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Net_Sales_Mean',
+                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
+                        color='Net_Sales_Mean',
+                        color_continuous_scale='Greens',
+                        title=title
+                    )
+                    fig.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                    )
+                    render_chart(fig, dark_mode)
+                col1, col2 = st.columns(2)
+                with col1:
+                    title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
+                    st.subheader("Transaction Count by Day")
+                    fig = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Transaction_Count',
+                        labels={'Transaction_Count': 'Number of Transactions', 'Day': 'Day of Week'},
+                        color='Transaction_Count',
+                        color_continuous_scale='Oranges',
+                        title=title
+                    )
+                    fig.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                    )
+                    render_chart(fig, dark_mode)
+                with col2:
+                    st.subheader("Day of Week Summary Table")
+                    display_df = day_sales_plot.copy()
+                    display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                    display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
+                    display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                    display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
+                    display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
+                    display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
@@ -2158,133 +2085,70 @@ def main():
         else:
             st.header("⏰ Hourly Sales Patterns")
         
-        # Use pre-aggregated data only if no employee filter AND "All Time" date range
-        # Otherwise, calculate from filtered_sales to respect date range and employee filters
-        if selected_employee != 'All' or not date_range_is_all_time or 'Hour' not in filtered_sales.columns or hourly_df is None:
-            # Calculate from filtered data (supports employee filtering)
-            if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
-                hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
-                hourly_sales.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
-                hourly_sales = hourly_sales.sort_values('Hour')
-                hourly_sales['Gross_Sales_Sum'] = filtered_sales.groupby('Hour')['Gross_Sales'].sum().values
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
-                    st.subheader("Sales by Hour of Day")
-                    fig = px.bar(
-                        hourly_sales,
-                        x='Hour',
-                        y='Net_Sales_Sum',
-                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
-                        color='Net_Sales_Sum',
-                        color_continuous_scale='Purples',
-                        title=title
-                    )
-                    fig.update_layout(height=400, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
-                with col2:
-                    title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
-                    st.subheader("Average Transaction by Hour")
-                    fig = px.line(
-                        hourly_sales,
-                        x='Hour',
-                        y='Net_Sales_Mean',
-                        markers=True,
-                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
-                        title=title
-                    )
-                    fig.update_layout(height=400)
-                    render_chart(fig, dark_mode)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
-                    st.subheader("Transaction Volume by Hour")
-                    fig = px.bar(
-                        hourly_sales,
-                        x='Hour',
-                        y='Transaction_Count',
-                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
-                        color='Transaction_Count',
-                        color_continuous_scale='Blues',
-                        title=title
-                    )
-                    fig.update_layout(height=400, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
-                with col2:
-                    st.subheader("Peak Hours Analysis")
-                    peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
-                    if len(peak_hours) > 0:
-                        st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
-                        for idx, row in peak_hours.iterrows():
-                            hour_str = f"{int(row['Hour']):02d}:00"
-                            st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
-                    else:
-                        st.info("No hourly data available for the selected filters.")
-            else:
-                st.info(
-                    "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
-                    "with values like `09:53:04` or `2023-07-14T09:53:04+00`. Check Debug: Data & Columns for column names."
+        # Always calculate from filtered_sales to respect date range and employee filters
+        if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
+            hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+            hourly_sales.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
+            hourly_sales = hourly_sales.sort_values('Hour')
+            hourly_sales['Gross_Sales_Sum'] = filtered_sales.groupby('Hour')['Gross_Sales'].sum().values
+            col1, col2 = st.columns(2)
+            with col1:
+                title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
+                st.subheader("Sales by Hour of Day")
+                fig = px.bar(
+                    hourly_sales,
+                    x='Hour',
+                    y='Net_Sales_Sum',
+                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                    color='Net_Sales_Sum',
+                    color_continuous_scale='Purples',
+                    title=title
                 )
-        else:
-            # Use pre-aggregated data when viewing all employees
-            if hourly_df is not None:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("Sales by Hour of Day")
-                    hourly_df_sorted = hourly_df.sort_values('Hour')
-                    fig = px.bar(
-                        hourly_df_sorted,
-                        x='Hour',
-                        y='Net_Sales_Sum',
-                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
-                        color='Net_Sales_Sum',
-                        color_continuous_scale='Purples'
-                    )
-                    fig.update_layout(height=400, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
-                with col2:
-                    st.subheader("Average Transaction by Hour")
-                    fig = px.line(
-                        hourly_df_sorted,
-                        x='Hour',
-                        y='Net_Sales_Mean',
-                        markers=True,
-                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
-                        title='Average Transaction Value by Hour'
-                    )
-                    fig.update_layout(height=400)
-                    render_chart(fig, dark_mode)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("Transaction Volume by Hour")
-                    fig = px.bar(
-                        hourly_df_sorted,
-                        x='Hour',
-                        y='Transaction_Count',
-                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
-                        color='Transaction_Count',
-                        color_continuous_scale='Blues'
-                    )
-                    fig.update_layout(height=400, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
-                with col2:
-                    st.subheader("Peak Hours Analysis")
-                    peak_hours = hourly_df_sorted.nlargest(5, 'Net_Sales_Sum')
-                    st.write("**Top 5 Peak Sales Hours:**")
+                fig.update_layout(height=400, showlegend=False)
+                render_chart(fig, dark_mode)
+            with col2:
+                title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
+                st.subheader("Average Transaction by Hour")
+                fig = px.line(
+                    hourly_sales,
+                    x='Hour',
+                    y='Net_Sales_Mean',
+                    markers=True,
+                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                    title=title
+                )
+                fig.update_layout(height=400)
+                render_chart(fig, dark_mode)
+            col1, col2 = st.columns(2)
+            with col1:
+                title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
+                st.subheader("Transaction Volume by Hour")
+                fig = px.bar(
+                    hourly_sales,
+                    x='Hour',
+                    y='Transaction_Count',
+                    labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                    color='Transaction_Count',
+                    color_continuous_scale='Blues',
+                    title=title
+                )
+                fig.update_layout(height=400, showlegend=False)
+                render_chart(fig, dark_mode)
+            with col2:
+                st.subheader("Peak Hours Analysis")
+                peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
+                if len(peak_hours) > 0:
+                    st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
                     for idx, row in peak_hours.iterrows():
                         hour_str = f"{int(row['Hour']):02d}:00"
                         st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
+                else:
+                    st.info("No hourly data available for the selected filters.")
+        else:
+            st.info(
+                "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
+                "with values like `09:53:04` or `2023-07-14T09:53:04+00`. Check Debug: Data & Columns for column names."
+            )
     
     # TAB 6: Product Patterns
     with tab6:
@@ -2293,222 +2157,131 @@ def main():
         else:
             st.header("🛍️ Product Patterns Analysis")
         
-        # Use pre-aggregated data only if no employee filter AND "All Time" date range
-        # Otherwise, calculate from filtered_sales to respect date range and employee filters
-        if selected_employee != 'All' or not date_range_is_all_time or product_df is None:
-            # Calculate from filtered data (supports employee filtering)
-            if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
-                # Extract product sales from filtered data
-                product_sales_dict = {}
-                product_count_dict = {}
-                product_amounts_dict = {}
-                
-                for idx, row in filtered_sales.iterrows():
-                    products = row['Products']
-                    sale_amount = row['Net_Sales']
-                    
-                    if pd.notna(products) and isinstance(products, str):
-                        # Split by comma and process each product
-                        items = [i.strip() for i in products.split(',') if i.strip()]
-                        num_items = len([i for i in items if 'x' in i and not i.startswith('-')])
-                        
-                        for item in items:
-                            item = item.strip()
-                            # Skip refunds (negative items)
-                            if item.startswith('-') or 'x-' in item:
-                                continue
-                                
-                            if 'x' in item:
-                                try:
-                                    # Format: "Product Name 1x135.00" or "Product Name 1x£135.00"
-                                    # Pattern: [Product Name] [quantity]x[price]
-                                    # Use regex to match: text, optional space, number, 'x', price
-                                    pattern = r'^(.+?)\s+(\d+)x([\d.,£]+)$'
-                                    match = re.match(pattern, item)
-                                    
-                                    if match:
-                                        product_name = match.group(1).strip()
-                                        quantity = int(match.group(2))
-                                        price_str = match.group(3).strip()
-                                        
-                                        # Clean and parse price
-                                        price_clean = price_str.replace('£', '').replace(',', '').strip()
-                                        price_match = re.search(r'(\d+\.?\d*)', price_clean)
-                                        if price_match:
-                                            price = float(price_match.group(1))
-                                            # Sanity check: reasonable price range
-                                            if price <= 0 or price > 50000:  # Max £50k per item
-                                                continue
-                                        else:
+        # Always calculate from filtered_sales to respect date range and employee filters
+        if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
+            # Extract product sales from filtered data
+            product_sales_dict = {}
+            product_count_dict = {}
+            product_amounts_dict = {}
+            for idx, row in filtered_sales.iterrows():
+                products = row['Products']
+                sale_amount = row['Net_Sales']
+                if pd.notna(products) and isinstance(products, str):
+                    items = [i.strip() for i in products.split(',') if i.strip()]
+                    for item in items:
+                        item = item.strip()
+                        if item.startswith('-') or 'x-' in item:
+                            continue
+                        if 'x' in item:
+                            try:
+                                pattern = r'^(.+?)\s+(\d+)x([\d.,£]+)$'
+                                match = re.match(pattern, item)
+                                if match:
+                                    product_name = match.group(1).strip()
+                                    quantity = int(match.group(2))
+                                    price_str = match.group(3).strip()
+                                    price_clean = price_str.replace('£', '').replace(',', '').strip()
+                                    price_match = re.search(r'(\d+\.?\d*)', price_clean)
+                                    if price_match:
+                                        price = float(price_match.group(1))
+                                        if price <= 0 or price > 50000:
                                             continue
-                                        
-                                        if product_name and len(product_name) > 0:
-                                            # Price is already the total for this line item
-                                            if product_name not in product_sales_dict:
-                                                product_sales_dict[product_name] = 0
-                                                product_count_dict[product_name] = 0
-                                            
-                                            product_sales_dict[product_name] += price
-                                            product_count_dict[product_name] += quantity
                                     else:
-                                        # Fallback: try simpler pattern or skip
-                                        # If we can't parse, skip this item to avoid incorrect data
                                         continue
-                                        
-                                except Exception as e:
-                                    # Skip items that fail to parse
+                                    if product_name and len(product_name) > 0:
+                                        if product_name not in product_sales_dict:
+                                            product_sales_dict[product_name] = 0
+                                            product_count_dict[product_name] = 0
+                                        product_sales_dict[product_name] += price
+                                        product_count_dict[product_name] += quantity
+                                else:
                                     continue
-                
-                # Create DataFrame from calculated data
-                if product_sales_dict:
-                    product_data = []
-                    for product, total_sales in product_sales_dict.items():
-                        count = product_count_dict.get(product, 0)
-                        avg_sale = total_sales / count if count > 0 else 0
-                        product_data.append({
-                            'Product': product,
-                            'Total_Sales': total_sales,
-                            'Count': count,
-                            'Avg_Sale': avg_sale
-                        })
-                    
-                    product_df_filtered = pd.DataFrame(product_data)
-                    product_df_filtered = product_df_filtered[product_df_filtered['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        title = f'Top Products by Sales - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Sales Volume'
-                        st.subheader("Top Products by Sales Volume")
-                        top_products = product_df_filtered.head(20)
-                        if len(top_products) > 0:
-                            fig = px.bar(
-                                top_products,
-                                x='Total_Sales',
-                                y='Product',
-                                orientation='h',
-                                labels={'Total_Sales': 'Total Sales (£)'},
-                                color='Total_Sales',
-                                color_continuous_scale='Blues',
-                                title=title
-                            )
-                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                            render_chart(fig, dark_mode)
-                        else:
-                            st.info("No product data available for the selected filters.")
-                    
-                    with col2:
-                        title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
-                        st.subheader("Top Products by Transaction Count")
-                        top_count = product_df_filtered.nlargest(20, 'Count')
-                        if len(top_count) > 0:
-                            fig = px.bar(
-                                top_count,
-                                x='Count',
-                                y='Product',
-                                orientation='h',
-                                labels={'Count': 'Number of Transactions'},
-                                color='Count',
-                                color_continuous_scale='Greens',
-                                title=title
-                            )
-                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                            render_chart(fig, dark_mode)
-                        else:
-                            st.info("No product data available for the selected filters.")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
-                        st.subheader("Top Products by Average Sale Value")
-                        top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
-                        if len(top_avg) > 0:
-                            fig = px.bar(
-                                top_avg,
-                                x='Avg_Sale',
-                                y='Product',
-                                orientation='h',
-                                labels={'Avg_Sale': 'Average Sale (£)'},
-                                color='Avg_Sale',
-                                color_continuous_scale='Oranges',
-                                title=title
-                            )
-                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                            render_chart(fig, dark_mode)
-                        else:
-                            st.info("No product data available for the selected filters.")
-                    
-                    with col2:
-                        st.subheader("Product Performance Summary")
-                        display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
-                        display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
-                        display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
-                        display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
-                        st.dataframe(display_df, use_container_width=True, height=600)
-                else:
-                    st.info("No product data available in the filtered data.")
-            else:
-                st.info("Product data not available in the sales data.")
-        else:
-            # Use pre-aggregated data when viewing all employees
-            if product_df is not None:
+                            except Exception:
+                                continue
+            # Create DataFrame from calculated data
+            if product_sales_dict:
+                product_data = []
+                for product, total_sales in product_sales_dict.items():
+                    count = product_count_dict.get(product, 0)
+                    avg_sale = total_sales / count if count > 0 else 0
+                    product_data.append({
+                        'Product': product,
+                        'Total_Sales': total_sales,
+                        'Count': count,
+                        'Avg_Sale': avg_sale
+                    })
+                product_df_filtered = pd.DataFrame(product_data)
+                product_df_filtered = product_df_filtered[product_df_filtered['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
                 col1, col2 = st.columns(2)
-                
                 with col1:
-                    st.subheader("Top 20 Products by Sales Volume")
-                    top_products = product_df.nlargest(20, 'Total_Sales')
-                    fig = px.bar(
-                        top_products,
-                        x='Total_Sales',
-                        y='Product',
-                        orientation='h',
-                        labels={'Total_Sales': 'Total Sales (£)'},
-                        color='Total_Sales',
-                        color_continuous_scale='Blues'
-                    )
-                    fig.update_layout(height=600, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
+                    title = f'Top Products by Sales - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Sales Volume'
+                    st.subheader("Top Products by Sales Volume")
+                    top_products = product_df_filtered.head(20)
+                    if len(top_products) > 0:
+                        fig = px.bar(
+                            top_products,
+                            x='Total_Sales',
+                            y='Product',
+                            orientation='h',
+                            labels={'Total_Sales': 'Total Sales (£)'},
+                            color='Total_Sales',
+                            color_continuous_scale='Blues',
+                            title=title
+                        )
+                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                        render_chart(fig, dark_mode)
+                    else:
+                        st.info("No product data available for the selected filters.")
                 with col2:
-                    st.subheader("Top 20 Products by Transaction Count")
-                    top_count = product_df.nlargest(20, 'Count')
-                    fig = px.bar(
-                        top_count,
-                        x='Count',
-                        y='Product',
-                        orientation='h',
-                        labels={'Count': 'Number of Transactions'},
-                        color='Count',
-                        color_continuous_scale='Greens'
-                    )
-                    fig.update_layout(height=600, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
+                    title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
+                    st.subheader("Top Products by Transaction Count")
+                    top_count = product_df_filtered.nlargest(20, 'Count')
+                    if len(top_count) > 0:
+                        fig = px.bar(
+                            top_count,
+                            x='Count',
+                            y='Product',
+                            orientation='h',
+                            labels={'Count': 'Number of Transactions'},
+                            color='Count',
+                            color_continuous_scale='Greens',
+                            title=title
+                        )
+                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                        render_chart(fig, dark_mode)
+                    else:
+                        st.info("No product data available for the selected filters.")
                 col1, col2 = st.columns(2)
-                
                 with col1:
+                    title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
                     st.subheader("Top Products by Average Sale Value")
-                    top_avg = product_df[product_df['Count'] >= 5].nlargest(20, 'Avg_Sale')
-                    fig = px.bar(
-                        top_avg,
-                        x='Avg_Sale',
-                        y='Product',
-                        orientation='h',
-                        labels={'Avg_Sale': 'Average Sale (£)'},
-                        color='Avg_Sale',
-                        color_continuous_scale='Oranges'
-                    )
-                    fig.update_layout(height=600, showlegend=False)
-                    render_chart(fig, dark_mode)
-                
+                    top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
+                    if len(top_avg) > 0:
+                        fig = px.bar(
+                            top_avg,
+                            x='Avg_Sale',
+                            y='Product',
+                            orientation='h',
+                            labels={'Avg_Sale': 'Average Sale (£)'},
+                            color='Avg_Sale',
+                            color_continuous_scale='Oranges',
+                            title=title
+                        )
+                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                        render_chart(fig, dark_mode)
+                    else:
+                        st.info("No product data available for the selected filters.")
                 with col2:
                     st.subheader("Product Performance Summary")
-                    display_df = product_df.nlargest(30, 'Total_Sales')[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                    display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
                     display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
                     display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
                     display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
-                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=600)
+                    st.dataframe(display_df, use_container_width=True, height=600)
+            else:
+                st.info("No product data available in the filtered data.")
+        else:
+            st.info("Product data not available in the sales data.")
     
     # TAB 7: Future Projections
     with tab7:
@@ -2973,8 +2746,9 @@ def main():
             st.warning("No data for the selected filters.")
         else:
             with st.expander("🛍️ Product Mix & Share", expanded=True):
-                if product_df is not None and len(product_df) > 0:
-                    top = product_df.head(15)
+                insights_product_df = _compute_product_from_sales(filtered_sales)
+                if insights_product_df is not None and len(insights_product_df) > 0:
+                    top = insights_product_df.head(15)
                     top['Share_%'] = top['Total_Sales'] / top['Total_Sales'].sum() * 100
                     fig = px.pie(top, values='Share_%', names='Product', title='Product Mix (Top 15)', color_discrete_sequence=CHART_COLORWAY)
                     fig.update_layout(height=400)
