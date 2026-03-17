@@ -1565,7 +1565,10 @@ def main():
         # Set default dates if no date data
         start_date = None
         end_date = None
-    
+
+    # Legacy: no longer used (multi-year comparison replaced sidebar toggle)
+    compare_to_last_year = False
+
     # Get unique employees from the DATE-FILTERED data (only those with transactions in the selected range)
     emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
     if emp_col in filtered_sales.columns:
@@ -1773,36 +1776,104 @@ def main():
     att_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
     unique_employees_count = filtered_sales[att_col].nunique() if att_col in filtered_sales.columns else 0
 
-    # KPI trend: period-over-period comparison (vs prior period of same length)
-    prev_net_sales = prev_avg_transaction = prev_transactions = prev_refunds = None
+    # Multi-year comparison: same calendar period in each previous year (respects shop, employee, date filters)
+    year_comparisons = {}  # year -> {net_sales, gross_sales, transactions, avg_transaction, refunds, active_employees}
     if start_date and end_date and work_df['Date'].notna().any():
-        period_days = (end_date - start_date).days + 1
-        prev_end_date = start_date - timedelta(days=1)
-        prev_start_date = prev_end_date - timedelta(days=period_days - 1)
-        prev_sales = work_df[
-            (work_df['Date'].dt.date >= prev_start_date) &
-            (work_df['Date'].dt.date <= prev_end_date)
-        ]
-        if selected_employee != 'All':
-            prev_col = 'Commission_Employee' if 'Commission_Employee' in prev_sales.columns else 'Employee'
-            if prev_col in prev_sales.columns:
-                prev_sales = prev_sales[prev_sales[prev_col].astype(str).str.strip() == selected_employee.strip()]
-        if len(prev_sales) > 0:
-            prev_net_sales = prev_sales['Net_Sales'].sum()
-            prev_transactions = int(round(prev_sales['Transaction_Weight'].sum())) if 'Transaction_Weight' in prev_sales.columns else len(prev_sales)
-            prev_avg_transaction = prev_net_sales / prev_transactions if prev_transactions > 0 else 0
-            prev_refunds = abs(prev_sales['Refunds'].sum()) if 'Refunds' in prev_sales.columns else 0
+        def _shift_date_to_year(d, years_back):
+            try:
+                return d.replace(year=d.year - years_back)
+            except ValueError:
+                return d.replace(year=d.year - years_back, day=28)
 
-    def _trend_delta(current, prev, is_pct=False):
-        """Format delta for period-over-period comparison."""
-        if prev is None or prev == 0:
-            return None
-        change = (current - prev) / prev * 100 if is_pct else current - prev
-        if is_pct:
-            return f"{change:+.1f}% vs prior period"
-        if abs(change) >= 1:
-            return f"{change:+,.0f} vs prior period"
-        return f"{change:+.2f} vs prior period"
+        current_year = start_date.year
+        all_years_in_data = set(work_df['Date'].dropna().dt.year.astype(int))
+        prev_years = sorted([y for y in all_years_in_data if y < current_year], reverse=True)
+        emp_col_comp = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
+
+        for year in prev_years:
+            years_back = current_year - year
+            py_start = _shift_date_to_year(start_date, years_back)
+            py_end = _shift_date_to_year(end_date, years_back)
+            py_sales = work_df[
+                (work_df['Date'].dt.date >= py_start) &
+                (work_df['Date'].dt.date <= py_end)
+            ].copy()
+            if selected_employee != 'All' and emp_col_comp in py_sales.columns:
+                py_sales = py_sales[py_sales[emp_col_comp].astype(str).str.strip() == selected_employee.strip()]
+            if selected_employee == 'All' and not show_inactive_in_filter and active_employees and emp_col_comp in py_sales.columns:
+                py_sales = py_sales[py_sales[emp_col_comp].isin(active_employees)]
+            if len(py_sales) == 0:
+                continue
+            tx = int(round(py_sales['Transaction_Weight'].sum())) if 'Transaction_Weight' in py_sales.columns else len(py_sales)
+            gross = py_sales['Gross_Sales'].sum()
+            net = py_sales['Net_Sales'].sum()
+            ref = abs(py_sales['Refunds'].sum()) if 'Refunds' in py_sales.columns else 0
+            year_comparisons[year] = {
+                'net_sales': net,
+                'gross_sales': gross,
+                'transactions': tx,
+                'avg_transaction': net / tx if tx > 0 else 0,
+                'refunds': ref,
+                'active_employees': py_sales[emp_col_comp].nunique() if emp_col_comp in py_sales.columns else 0,
+            }
+
+    def _year_comparison_lines(metric_key, current_val, is_pct=False, is_currency=False):
+        """Build comparison lines for a metric: (comparison_text, value_text) for each year. Value = actual amount that year."""
+        result = []
+        for year, data in sorted(year_comparisons.items(), reverse=True):
+            prev = data.get(metric_key)
+            if prev is None or (is_pct and prev == 0):
+                continue
+            if is_pct:
+                change = (current_val - prev) / prev * 100
+                line = f"vs {year}: {change:+.1f}%"
+            elif is_currency:
+                change = current_val - prev
+                line = f"vs {year}: £{change:+,.2f}"
+            else:
+                change = current_val - prev
+                line = f"vs {year}: {change:+,.0f}"
+            # Format actual value for that year
+            if is_currency or metric_key in ('net_sales', 'gross_sales', 'refunds', 'avg_transaction'):
+                value_fmt = f"£{prev:,.2f}"
+            else:
+                value_fmt = f"{int(prev):,}"
+            result.append((line, value_fmt))
+        return result
+
+    def _metric_card_html(label, value_fmt, delta_text=None, delta_positive=None, year_lines=None):
+        """Build a full metric card as HTML so label, value, delta and year comparisons are all inside the box."""
+        # When we have year comparisons, don't show the first entry (delta) - only show the block after the separation line
+        delta_html = ""
+        if delta_text and not year_lines:
+            delta_color = "#28a745" if (delta_positive is True) else "#dc3545" if (delta_positive is False) else "#666"
+            delta_html = f'<div style="font-size:0.85em;color:{delta_color};margin-top:2px">{delta_text}</div>'
+        years_html = ""
+        if year_lines:
+            is_refund = "refund" in label.lower()
+            rows = []
+            for item in year_lines:
+                line = item[0] if isinstance(item, tuple) else item
+                value = item[1] if isinstance(item, tuple) else ""
+                pos = ": +" in line or "£+" in line
+                if not pos and (": -" in line or "£-" in line):
+                    pos = False
+                else:
+                    pos = None if not pos else True
+                if is_refund and pos is not None:
+                    pos = not pos
+                c = "#28a745" if pos is True else "#dc3545" if pos is False else "#666"
+                row = f'<div style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;gap:8px"><span style="color:{c}">{line}</span><span style="color:#333;font-weight:500">{value}</span></div>'
+                rows.append(row)
+            years_html = f'<div style="font-size:0.9em;line-height:1.4;margin-top:6px;padding-top:6px;border-top:1px solid #eee;overflow-wrap:break-word;word-break:break-word">{"".join(rows)}</div>'
+        return f"""
+        <div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px;background:#fff;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,0.05)">
+            <div style="font-size:0.85em;color:#666">{label}</div>
+            <div style="font-size:1.5em;font-weight:600">{value_fmt}</div>
+            {delta_html}
+            {years_html}
+        </div>
+        """
     
     # Calculate comparison metrics if employee is selected
     if selected_employee != 'All' and len(work_df) > len(filtered_sales) and start_date and end_date:
@@ -1818,37 +1889,43 @@ def main():
         employee_share = (total_net_sales / all_total_sales * 100) if all_total_sales > 0 else 0
         
         col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-        
+        # Year comparisons (same employee, same period previous years)
+        net_lines = _year_comparison_lines('net_sales', total_net_sales, is_pct=True)
+        gross_lines = _year_comparison_lines('gross_sales', total_gross_sales, is_pct=True)
+        tx_lines = _year_comparison_lines('transactions', total_transactions, is_pct=True)
+        avg_lines = _year_comparison_lines('avg_transaction', avg_transaction, is_currency=True)
+        ref_lines = _year_comparison_lines('refunds', total_refunds, is_currency=True)
+
+        def _emp_metric(label, value_fmt, lines, delta_override=None):
+            pos = None
+            first = lines[0] if lines else None
+            d = first[0] if isinstance(first, tuple) else first
+            if d and "vs " in str(d):
+                pos = ": +" in d or "£+" in d
+                if not pos:
+                    pos = False if (": -" in d or "£-" in d) else None
+                if "refund" in label.lower() and pos is not None:
+                    pos = not pos  # less refunds = good
+            # Don't show first entry (delta) when we have year_lines - only show the block after separation line
+            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=lines)
+            st.html(html)
+
         with col1:
-            comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in comparison_sales.columns else 'Employee'
-            n_emp = comparison_sales[comp_emp_col].nunique() if comp_emp_col in comparison_sales.columns else 0
-            delta = total_net_sales - (all_total_sales / n_emp) if n_emp > 0 else None
-            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}", 
-                     delta=f"{employee_share:.1f}% of total" if employee_share > 0 else None)
+            delta_override = f"{employee_share:.1f}% of total" if employee_share > 0 else None
+            _emp_metric("Total Net Sales", f"£{total_net_sales:,.2f}", net_lines, delta_override)
         with col2:
-            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}")
+            _emp_metric("Total Gross Sales", f"£{total_gross_sales:,.2f}", gross_lines)
         with col3:
-            st.metric("Total Transactions", f"{total_transactions:,}")
+            _emp_metric("Total Transactions", f"{total_transactions:,}", tx_lines)
         with col4:
-            delta = avg_transaction - all_avg_transaction if all_avg_transaction > 0 else None
-            if delta is not None and delta != 0:
-                # Format delta string with sign at the very beginning for proper parsing
-                # Streamlit needs to see the negative sign first to determine arrow direction
-                if delta < 0:
-                    delta_str = f"-£{abs(delta):,.2f} vs avg"
-                else:
-                    delta_str = f"+£{delta:,.2f} vs avg"
-                # Use "normal" for standard colors: positive=green, negative=red
-                delta_color = "normal"
-                help_text = f"Compared to average transaction value of £{all_avg_transaction:,.2f}"
-            else:
-                delta_str = None
-                delta_color = None
-                help_text = "Average transaction value"
-            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", 
-                     delta=delta_str, delta_color=delta_color, help=help_text)
+            delta_override = None
+            if avg_transaction - all_avg_transaction != 0 and all_avg_transaction > 0:
+                d = avg_transaction - all_avg_transaction
+                delta_override = f"-£{abs(d):,.2f}" if d < 0 else f"+£{d:,.2f}"
+                delta_override = delta_override + " vs avg"
+            _emp_metric("Avg Transaction", f"£{avg_transaction:,.2f}", avg_lines, delta_override)
         with col5:
-            st.metric("Total Refunds", f"£{total_refunds:,.2f}")
+            _emp_metric("Total Refunds", f"£{total_refunds:,.2f}", ref_lines)
         with col6:
             refund_rate = (total_refunds / total_gross_sales * 100) if total_gross_sales > 0 else 0
             st.metric("Refund Rate", f"{refund_rate:.2f}%")
@@ -1881,29 +1958,34 @@ def main():
             st.metric("Top Product Sale", f"£{top_product_sales:,.2f}")
     else:
         col1, col2, col3, col4, col5, col6 = st.columns(6)
-        
+
+        def _render_metric_with_years(label, value_fmt, metric_key, current_val, is_pct=False, is_currency=False, help_base="", show_year_comparisons=True):
+            lines = _year_comparison_lines(metric_key, current_val, is_pct=is_pct, is_currency=is_currency) if show_year_comparisons else []
+            first = lines[0] if lines else None
+            d = first[0] if isinstance(first, tuple) else (str(first) if first else None)
+            pos = None
+            if d and isinstance(d, str) and "vs " in d:
+                pos = ": +" in d or "£+" in d
+                if not pos:
+                    pos = False if (": -" in d or "£-" in d) else None
+                if "refund" in label.lower() and pos is not None:
+                    pos = not pos
+            year_lines = lines if show_year_comparisons else None
+            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=year_lines)
+            st.html(html)
+
         with col1:
-            delta = _trend_delta(total_net_sales, prev_net_sales, is_pct=True) if prev_net_sales else None
-            st.metric("Total Net Sales", f"£{total_net_sales:,.2f}", delta=delta,
-                     help="Net sales for the selected period. Delta shows % change vs prior period of same length.")
+            _render_metric_with_years("Total Net Sales", f"£{total_net_sales:,.2f}", 'net_sales', total_net_sales, is_pct=True, help_base="Net sales for the selected period.")
         with col2:
-            st.metric("Total Gross Sales", f"£{total_gross_sales:,.2f}",
-                     help="Gross sales before refunds")
+            _render_metric_with_years("Total Gross Sales", f"£{total_gross_sales:,.2f}", 'gross_sales', total_gross_sales, is_pct=True, help_base="Gross sales before refunds.")
         with col3:
-            delta = _trend_delta(total_transactions, prev_transactions, is_pct=True) if prev_transactions else None
-            st.metric("Total Transactions", f"{total_transactions:,}", delta=delta,
-                     help="Number of transactions. Delta shows % change vs prior period.")
+            _render_metric_with_years("Total Transactions", f"{total_transactions:,}", 'transactions', total_transactions, is_pct=True, help_base="Number of transactions.")
         with col4:
-            delta = _trend_delta(avg_transaction, prev_avg_transaction) if prev_avg_transaction and prev_avg_transaction > 0 else None
-            st.metric("Avg Transaction", f"£{avg_transaction:,.2f}", delta=delta,
-                     help="Average transaction value")
+            _render_metric_with_years("Avg Transaction", f"£{avg_transaction:,.2f}", 'avg_transaction', avg_transaction, is_currency=True, help_base="Average transaction value.")
         with col5:
-            delta = _trend_delta(total_refunds, prev_refunds) if prev_refunds is not None else None
-            st.metric("Total Refunds", f"£{total_refunds:,.2f}", delta=delta,
-                     help="Total refund amount")
+            _render_metric_with_years("Total Refunds", f"£{total_refunds:,.2f}", 'refunds', total_refunds, is_currency=True, help_base="Total refund amount.")
         with col6:
-            st.metric("Active Employees", f"{unique_employees_count}",
-                     help="Number of unique employees with sales in this period")
+            _render_metric_with_years("Active Employees", f"{unique_employees_count}", 'active_employees', unique_employees_count, show_year_comparisons=False)
         
         # Debug: Show refund statistics if refunds are 0 but should exist
         if total_refunds == 0 and 'Refunds' in filtered_sales.columns:
