@@ -1808,7 +1808,9 @@ def main():
             gross = py_sales['Gross_Sales'].sum()
             net = py_sales['Net_Sales'].sum()
             ref = abs(py_sales['Refunds'].sum()) if 'Refunds' in py_sales.columns else 0
-            year_comparisons[year] = {
+            # Use end year of comparison period for display (e.g. Dec 2024–Feb 2025 -> "vs 2025")
+            display_year = py_end.year
+            year_comparisons[display_year] = {
                 'net_sales': net,
                 'gross_sales': gross,
                 'transactions': tx,
