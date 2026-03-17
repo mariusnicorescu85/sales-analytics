@@ -32,11 +32,30 @@ EMPLOYEE_NAME_MAPPING = {
     # From normalize_names.py (typos, order, shorthand)
     "Bir_ra Thanvi": "Bir-ra Thanvi",
     "Bir-ra B": "Bir-ra Thanvi",
+    "Bir-ra1": "Bir-ra",
     "Molly ": "Molly Tasheva",  # trailing space variant
     "Leonard Masie": "Leonard Maisie",
     "Nicorescu Codruta": "Codruta Nicorescu",
     # Duplicate/typo variants seen in data
     "Durbala Edmond1": "Durbala Edmond",
+    "Edmond1": "Edmond",
+    "Eddie1": "Eddie",
+    # Opatra employee list variants (from 2026-03-17 export)
+    "AishaM": "Aisha",
+    "Michiele": "Michela",
+    "Roim A": "Roim",
+    "Ruby1": "Ruby",
+    # PYT employee list variants (from 2026-03-17 export)
+    "Ayihab1": "Ayihab",
+    "AyshaK": "Aysha",
+    "Codruta": "Codruta Nicorescu",
+    "ErinA": "Erin",
+    "Iqra2": "Iqra",
+    "Tuba": "Raja Tuba",
+    "T Temitope": "Temitope",
+    "T.Molly": "Molly Tasheva",
+    "molly1": "Molly Tasheva",
+    "adam": "Adam Lee",
     # Add more as you discover them - check Debug: Data & Columns for unique names
 }
 
@@ -187,22 +206,14 @@ CHART_THEME = dict(
 )
 CHART_CONFIG = {"displayModeBar": True, "displaylogo": False, "toImageButtonOptions": {"format": "png", "filename": "chart"}}
 
-def apply_chart_theme(fig, dark=False):
+def apply_chart_theme(fig):
     """Apply unified theme to Plotly figure."""
     fig.update_layout(**CHART_THEME)
-    if dark:
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e0e0e0"),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)"),
-            yaxis=dict(gridcolor="rgba(255,255,255,0.1)", zerolinecolor="rgba(255,255,255,0.2)", tickformat=".2f"),
-        )
     return fig
 
-def render_chart(fig, dark=False, height=None):
+def render_chart(fig, height=None, key=None):
     """Render Plotly chart with theme and download support."""
-    fig = apply_chart_theme(fig, dark)
+    fig = apply_chart_theme(fig)
     if height:
         fig.update_layout(height=height)
     # Format bar chart hover to 2 decimal places
@@ -212,97 +223,149 @@ def render_chart(fig, dark=False, height=None):
                 trace.hovertemplate = '%{y}<br>%{x:,.2f}<extra></extra>'
             else:
                 trace.hovertemplate = '%{x}<br>%{y:,.2f}<extra></extra>'
-    st.plotly_chart(fig, use_container_width=True, config=CHART_CONFIG)
+    kwargs = {"use_container_width": True, "config": CHART_CONFIG}
+    if key is not None:
+        kwargs["key"] = key
+    st.plotly_chart(fig, **kwargs)
 
-# Custom CSS - applied dynamically based on dark mode
-def inject_css(dark_mode=False):
-    bg = "#0e1117" if dark_mode else "#ffffff"
-    card_bg = "#1e2130" if dark_mode else "#f8f9fa"
-    text = "#fafafa" if dark_mode else "#31333f"
-    border = "rgba(102, 126, 234, 0.3)" if dark_mode else "rgba(102, 126, 234, 0.2)"
-    # Dark mode: override Streamlit's main containers (target .stApp root for full coverage)
-    dark_overrides = ""
-    if dark_mode:
-        dark_overrides = """
-    .stApp, [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] main, [data-testid="stAppViewContainer"] .block-container {
-        background-color: #0e1117 !important;
-    }
-    section[data-testid="stSidebar"], section[data-testid="stSidebar"] > div {
-        background-color: #0e1117 !important;
-    }
-    .stApp h1, .stApp h2, .stApp h3, .stApp p, .stApp span, .stApp label, .stApp .stMarkdown, .stApp [data-testid="stMetricValue"], .stApp [data-testid="stMetricLabel"] {
-        color: #fafafa !important;
-    }
-    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] .stCaption {
-        color: #fafafa !important;
-    }
-    .stApp [data-testid="stMetric"] {
-        background-color: #1e2130 !important;
-        border-color: rgba(102, 126, 234, 0.3) !important;
-    }
-    .stApp .stTabs [data-baseweb="tab"][aria-selected="false"], .stApp .stTabs [role="tab"][aria-selected="false"] {
-        background: #1e2130 !important;
-        color: #fafafa !important;
-    }
-    .stApp .stTabs [data-baseweb="tab"][aria-selected="false"]:hover, .stApp .stTabs [role="tab"][aria-selected="false"]:hover {
-        background: #2d3142 !important;
-    }
-    .stApp .stExpander {
-        background-color: #1e2130 !important;
-        border-color: rgba(102, 126, 234, 0.3) !important;
-    }
-    .stApp .stDataFrame, .stApp [data-testid="stDataFrame"] {
-        background-color: #1e2130 !important;
-    }
-    .stApp .stCaption {
-        color: #b0b0b0 !important;
-    }
-    .stApp {
-        color-scheme: dark;
-    }
-    """
-    st.markdown(f"""
+# Custom CSS
+def inject_css():
+    bg = "#ffffff"
+    card_bg = "#f8f9fa"
+    text = "#31333f"
+    border = "rgba(102, 126, 234, 0.2)"
+    # Use st.html for CSS - st.markdown can render style tags as visible text in some deployments
+    st.html(f"""
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
     <style>
     :root {{
         --bg: {bg};
         --card-bg: {card_bg};
         --text: {text};
         --border: {border};
+        --font: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
-    {dark_overrides}
-    .main-header {{
-        font-size: 3rem;
-        font-weight: bold;
+    /* Apply DM Sans but NOT to spans - Material icon spans need their own font */
+    .stApp, .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3 {{
+        font-family: var(--font) !important;
+    }}
+    .stApp .stMarkdown span, .stApp [data-testid="stMetric"] span {{
+        font-family: var(--font) !important;
+    }}
+    /* Fix Material icons: sidebar collapse + expanders show "keyboard_double_arrow_right" when font overridden.
+       Hide broken icon text and show clean arrows. */
+    [data-testid="collapsedControl"] {{
+        font-size: 0;
+    }}
+    [data-testid="collapsedControl"]::before {{
+        content: "»";
+        font-size: 1.25rem;
+        font-family: var(--font) !important;
+        font-weight: 700;
+        display: inline-block;
+    }}
+    /* Expander icons - hide keyboard_double_arrow_right text, show › (only target icon span, not label) */
+    .stExpander summary [class*="material"] {{
+        font-size: 0 !important;
+        line-height: 0 !important;
+    }}
+    .stExpander summary [class*="material"]::before {{
+        content: "›";
+        font-size: 1.1rem;
+        font-family: var(--font) !important;
+        font-weight: 700;
+    }}
+    .header-bar {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem 1.5rem;
+        margin: -1rem -1rem 1rem -1rem;
+        background: linear-gradient(90deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.08) 100%);
+        border-bottom: 1px solid {border};
+        font-family: var(--font);
+    }}
+    .header-brand {{
+        font-size: 1.35rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }}
+    .header-total {{
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text);
+    }}
+    .nav-section {{
+        margin: 1rem 0;
+        padding: 0.5rem 0;
+        border-top: 1px solid rgba(102, 126, 234, 0.2);
+    }}
+    .nav-label {{
+        font-size: 0.7rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        color: var(--text);
+        opacity: 0.7;
+        padding: 0.5rem 1rem 0.25rem;
+    }}
+    .sidebar-kpi-card {{
+        margin-top: 1.5rem;
+        padding: 1rem;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.15) 100%);
+        border-radius: 12px;
+        border: 1px solid {border};
         text-align: center;
+    }}
+    .sidebar-kpi-value {{
+        font-size: 1.5rem;
+        font-weight: 700;
         color: #667eea;
-        margin-bottom: 0.5rem;
     }}
     .filter-summary {{
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
-        padding: 10px 16px;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 20px;
         margin-bottom: 1.5rem;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
-        border-radius: 10px;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.06) 0%, rgba(118, 75, 162, 0.06) 50%, rgba(240, 147, 251, 0.04) 100%);
+        border-radius: 14px;
         border: 1px solid {border};
         font-size: 0.9rem;
+        font-family: var(--font);
     }}
     .filter-badge {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
+        padding: 6px 14px;
+        border-radius: 24px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        letter-spacing: 0.02em;
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.25);
+    }}
+    .filter-badge-muted {{
+        background: var(--card-bg);
+        color: var(--text);
+        padding: 6px 14px;
+        border-radius: 24px;
         font-weight: 500;
+        font-size: 0.85rem;
+        border: 1px solid {border};
     }}
     .metric-card {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1.5rem;
-        border-radius: 10px;
+        border-radius: 12px;
         color: white;
         text-align: center;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.25);
-        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        border: 1px solid rgba(255,255,255,0.12);
     }}
     .metric-card-wrapper {{
         padding: 0.5rem;
@@ -318,54 +381,107 @@ def inject_css(dark_mode=False):
         max-height: 100vh;
         overflow-y: auto;
     }}
+    [data-testid="stSidebar"] .stMarkdown {{
+        font-family: var(--font) !important;
+    }}
     .stTabs [data-baseweb="tab-list"] {{
-        gap: 10px;
+        gap: 8px;
         padding: 0.75rem 0;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
     }}
     .stTabs [data-baseweb="tab"],
     .stTabs [role="tab"] {{
-        font-size: 1.15rem !important;
+        font-family: var(--font) !important;
+        font-size: 0.95rem !important;
         font-weight: 600 !important;
-        padding: 0.85rem 1.75rem !important;
+        padding: 0.7rem 1.25rem !important;
         border-radius: 10px;
+        white-space: nowrap;
+        transition: all 0.2s ease;
     }}
     .stTabs [data-baseweb="tab"][aria-selected="true"],
     .stTabs [role="tab"][aria-selected="true"] {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
         color: white !important;
+        box-shadow: 0 2px 12px rgba(102, 126, 234, 0.4);
     }}
     .stTabs [data-baseweb="tab"][aria-selected="false"],
     .stTabs [role="tab"][aria-selected="false"] {{
-        background: #f0f2f6 !important;
-        color: #31333f !important;
+        background: var(--card-bg) !important;
+        color: var(--text) !important;
+        border: 1px solid {border};
     }}
     .stTabs [data-baseweb="tab"][aria-selected="false"]:hover,
     .stTabs [role="tab"][aria-selected="false"]:hover {{
-        background: #e0e4eb !important;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.12) 100%) !important;
+        border-color: rgba(102, 126, 234, 0.4);
     }}
     .empty-state {{
         text-align: center;
-        padding: 3rem 2rem;
-        background: var(--card-bg);
-        border-radius: 12px;
-        border: 2px dashed var(--border);
+        padding: 4rem 2rem;
+        background: linear-gradient(180deg, var(--card-bg) 0%, rgba(102, 126, 234, 0.04) 100%);
+        border-radius: 16px;
+        border: 2px dashed {border};
         color: var(--text);
         margin: 2rem 0;
+        font-family: var(--font);
+    }}
+    .empty-state h3 {{
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }}
+    .empty-state p {{
+        opacity: 0.8;
+        font-size: 0.95rem;
     }}
     .empty-state-icon {{
-        font-size: 3rem;
+        font-size: 3.5rem;
         margin-bottom: 1rem;
-        opacity: 0.6;
+        opacity: 0.5;
+        filter: grayscale(0.2);
     }}
     [data-testid="stMetric"] {{
         background: var(--card-bg);
-        padding: 1rem;
+        padding: 1.1rem 1.25rem;
+        border-radius: 14px;
+        border: 1px solid {border};
+        box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+        transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    }}
+    [data-testid="stMetric"]:hover {{
+        box-shadow: 0 4px 16px rgba(102, 126, 234, 0.12);
+        border-color: rgba(102, 126, 234, 0.25);
+    }}
+    .context-banner {{
+        padding: 14px 20px;
         border-radius: 12px;
-        border: 1px solid var(--border);
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        margin-bottom: 1rem;
+        font-family: var(--font);
+        font-size: 0.95rem;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.08) 100%);
+        border: 1px solid rgba(102, 126, 234, 0.25);
+    }}
+    .context-banner.warning {{
+        background: linear-gradient(135deg, rgba(250, 204, 21, 0.12) 0%, rgba(245, 158, 11, 0.08) 100%);
+        border-color: rgba(245, 158, 11, 0.35);
+    }}
+    .section-divider {{
+        margin: 1.5rem 0 1rem;
+        border: none;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, {border}, transparent);
+    }}
+    div[data-testid="stHorizontalBlock"] > div:has([data-testid="stMetric"]) {{
+        margin-bottom: 0.25rem;
     }}
     </style>
-    """, unsafe_allow_html=True)
+    """)
 
 def _compute_employee_performance_from_sales(sales_df):
     """
@@ -663,8 +779,13 @@ def _process_sales_df(df):
     if not net_col or not date_col:
         return None
     df['Net_Sales'] = df[net_col].apply(_clean_currency)
-    df['Gross_Sales'] = df[gross_col].apply(_clean_currency) if gross_col else df['Net_Sales']
     df['Refunds'] = df[refund_col].apply(_clean_currency) if refund_col else 0
+    df['Refunds'] = df['Refunds'].fillna(0)
+    # Gross Sales = Net Sales + Refunds (when no Gross column: derive from accounting relationship)
+    if gross_col:
+        df['Gross_Sales'] = df[gross_col].apply(_clean_currency)
+    else:
+        df['Gross_Sales'] = df['Net_Sales'] + df['Refunds'].abs()
     # Parse dates: try DD/MM/YYYY first, then ISO (YYYY-MM-DD) - keep original for fallback
     date_series = df[date_col].copy()
     df['Date'] = pd.to_datetime(date_series, format='%d/%m/%Y', errors='coerce')
@@ -921,11 +1042,12 @@ def forecast_sales(sales_df, periods=30, method='moving_avg'):
         recent_avg = daily_sales['Net_Sales'].tail(recent_days).mean()
         
         # Calculate day-of-week multipliers
+        overall_mean = daily_sales['Net_Sales'].mean()
         day_multipliers = {}
         for day in range(7):
             day_sales = daily_sales[daily_sales['DayOfWeek'] == day]['Net_Sales']
-            if len(day_sales) > 0:
-                day_multipliers[day] = day_sales.mean() / daily_sales['Net_Sales'].mean()
+            if len(day_sales) > 0 and overall_mean > 0:
+                day_multipliers[day] = day_sales.mean() / overall_mean
             else:
                 day_multipliers[day] = 1.0
         
@@ -967,11 +1089,12 @@ def forecast_sales(sales_df, periods=30, method='moving_avg'):
         base_forecast = np.sum(recent_data * weights)
         
         # Day-of-week adjustments
+        overall_mean = daily_sales['Net_Sales'].mean()
         day_multipliers = {}
         for day in range(7):
             day_sales = daily_sales[daily_sales['DayOfWeek'] == day]['Net_Sales']
-            if len(day_sales) > 0:
-                day_multipliers[day] = day_sales.mean() / daily_sales['Net_Sales'].mean()
+            if len(day_sales) > 0 and overall_mean > 0:
+                day_multipliers[day] = day_sales.mean() / overall_mean
             else:
                 day_multipliers[day] = 1.0
         
@@ -991,11 +1114,12 @@ def forecast_sales(sales_df, periods=30, method='moving_avg'):
         recent_avg = daily_sales['Net_Sales'].tail(recent_days).mean()
         
         # Day-of-week multipliers
+        overall_mean = daily_sales['Net_Sales'].mean()
         day_multipliers = {}
         for day in range(7):
             day_sales = daily_sales[daily_sales['DayOfWeek'] == day]['Net_Sales']
-            if len(day_sales) > 0:
-                day_multipliers[day] = day_sales.mean() / daily_sales['Net_Sales'].mean()
+            if len(day_sales) > 0 and overall_mean > 0:
+                day_multipliers[day] = day_sales.mean() / overall_mean
             else:
                 day_multipliers[day] = 1.0
         
@@ -1098,17 +1222,203 @@ def forecast_monthly(sales_df, months=6, method='moving_avg'):
         
         return forecast_df, recent_avg, 0, 'Conservative'
 
+
+@st.fragment
+def _render_employee_status_tab(unique_employees):
+    """Employee Status tab content - fragment prevents tab reset when changing Status dropdown."""
+    st.header("👤 Employee Status")
+    st.caption("Mark employees as active or inactive. Inactive employees are excluded from Best Team recommendations.")
+    status_dict = load_employee_status()
+    for emp in unique_employees:
+        if emp not in status_dict:
+            status_dict[emp] = 'active'
+    status_df = pd.DataFrame([
+        {'Employee': emp, 'Status': status_dict.get(emp, 'active')}
+        for emp in sorted(unique_employees)
+    ])
+    edited = st.data_editor(
+        status_df,
+        column_config={
+            'Employee': st.column_config.TextColumn('Employee', disabled=True, help="Employee name"),
+            'Status': st.column_config.SelectboxColumn('Status', options=['active', 'inactive'], required=True, help="Active = included in Best Team; Inactive = excluded from recommendations"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        key='employee_status_editor'
+    )
+    if st.button("💾 Save Employee Status", key='save_status'):
+        new_status = {row['Employee']: row['Status'] for _, row in edited.iterrows()}
+        if save_employee_status(new_status):
+            st.success("✅ Employee status saved.")
+            st.rerun()
+        else:
+            st.error("Could not save. Check Supabase connection or file permissions.")
+
+
+@st.fragment
+def _render_best_team_tab(work_df, start_date, end_date, active_employees):
+    """Best Team tab content - fragment prevents tab reset when changing team size slider."""
+    st.header("🏆 Best Team for Week")
+    date_range_note = f"📅 Using: {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if (start_date and end_date) else "📅 Using: All dates"
+    st.caption(f"Performance profiles, peak times, and scheduling guidance for active employees. {date_range_note}")
+    best_team_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
+    if start_date is not None and end_date is not None and work_df['Date'].notna().any():
+        best_team_df = work_df[(work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)].copy()
+    else:
+        best_team_df = work_df.copy()
+    active_only = best_team_df[best_team_df[best_team_emp_col].isin(active_employees)] if active_employees else best_team_df
+    if len(active_only) == 0:
+        st.warning("No active employees in the selected date range. Mark employees as active in the Employee Status tab or widen the date range.")
+        return
+    team_size = st.slider("Team size per day", min_value=1, max_value=10, value=3, help="Number of top performers to recommend per day", key="bt_team_size")
+    score_df = active_only.copy()
+    if len(score_df) == 0:
+        st.warning("No data in the selected date range. Try a different date range in the sidebar.")
+        return
+    if 'Day of the Week' not in score_df.columns or score_df['Day of the Week'].isna().all():
+        score_df = score_df.copy()
+        score_df['Day of the Week'] = pd.to_datetime(score_df['Date'], errors='coerce').dt.day_name()
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    by_day = score_df.groupby([best_team_emp_col, 'Day of the Week'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+    by_day = by_day.rename(columns={'Day of the Week': 'Day', best_team_emp_col: 'Employee', 'sum': 'Total', 'mean': 'Avg', 'count': 'Count'})
+    score_df_pre_hour = score_df.copy()  # keep before hour filter for day counts
+    has_hour = 'Hour' in score_df.columns and score_df['Hour'].notna().any()
+    if has_hour:
+        score_df['Hour'] = pd.to_numeric(score_df['Hour'], errors='coerce')
+        score_df = score_df[score_df['Hour'].notna() & (score_df['Hour'] >= 0) & (score_df['Hour'] <= 23)]
+    by_hour = score_df.groupby([best_team_emp_col, 'Hour'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index() if has_hour else None
+    if by_hour is not None:
+        by_hour = by_hour.rename(columns={best_team_emp_col: 'Employee'})
+    # --- Employee Performance Profiles ---
+    st.subheader("📋 Employee Performance Profiles")
+    st.caption("Averages by day, avg by hour, peak day, peak hour — for each active employee.")
+    emp_avg_day = by_day.groupby('Employee')['Avg'].mean().reset_index()
+    emp_avg_day.columns = ['Employee', 'Avg_Sales_Per_Day']
+    emp_peak_day = by_day.loc[by_day.groupby('Employee')['Avg'].idxmax()][['Employee', 'Day', 'Avg']].rename(columns={'Day': 'Peak_Day', 'Avg': 'Peak_Day_Avg'})
+    profile_df = emp_avg_day.merge(emp_peak_day, on='Employee', how='left')
+    if by_hour is not None and len(by_hour) > 0:
+        emp_avg_hour = by_hour.groupby('Employee')['mean'].mean().reset_index()
+        emp_avg_hour.columns = ['Employee', 'Avg_Sales_Per_Hour']
+        emp_peak_hour = by_hour.loc[by_hour.groupby('Employee')['mean'].idxmax()][['Employee', 'Hour', 'mean']].rename(columns={'Hour': 'Peak_Hour', 'mean': 'Peak_Hour_Avg'})
+        profile_df = profile_df.merge(emp_avg_hour, on='Employee', how='left').merge(emp_peak_hour, on='Employee', how='left')
+        profile_df['Peak_Hour'] = profile_df['Peak_Hour'].apply(lambda x: f"{int(x):02d}:00" if pd.notna(x) else '-')
+    else:
+        profile_df['Avg_Sales_Per_Hour'] = np.nan
+        profile_df['Peak_Hour'] = '-'
+    profile_df = profile_df.rename(columns={'Avg_Sales_Per_Day': 'Avg Daily (£)', 'Peak_Day': 'Peak Day', 'Peak_Day_Avg': 'Peak Day Avg (£)', 'Avg_Sales_Per_Hour': 'Avg Hourly (£)', 'Peak_Hour': 'Peak Hour'})
+    for c in ['Avg Daily (£)', 'Peak Day Avg (£)', 'Avg Hourly (£)']:
+        if c in profile_df.columns:
+            profile_df[c] = profile_df[c].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else '-')
+    st.dataframe(profile_df, use_container_width=True, hide_index=True)
+    # --- Average per day of week ---
+    st.subheader("📅 Average per day of week")
+    pivot_day_table = by_day.pivot_table(index='Employee', columns='Day', values='Avg', aggfunc='mean').reindex(columns=day_order)
+    if len(pivot_day_table) > 0:
+        pivot_day_display = pivot_day_table.reset_index()
+        for col in pivot_day_display.columns:
+            if col != 'Employee':
+                pivot_day_display[col] = pivot_day_display[col].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "-")
+        st.dataframe(pivot_day_display, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No day-of-week data available.")
+    # --- Heatmaps ---
+    st.subheader("📊 Performance Heatmaps")
+    col_hm1, col_hm2 = st.columns(2)
+    with col_hm1:
+        pivot_day = by_day.pivot_table(index='Employee', columns='Day', values='Avg', aggfunc='mean').reindex(columns=day_order)
+        if len(pivot_day) > 0 and pivot_day.notna().any().any():
+            fig_day = px.imshow(pivot_day.fillna(0), title="Avg Sales by Day (£)", labels=dict(x="Day", y="Employee", color="Avg £"), color_continuous_scale='Blues', aspect='auto')
+            fig_day.update_layout(height=min(400, 80 + len(pivot_day) * 25))
+            render_chart(fig_day)
+        else:
+            st.caption("No day-of-week data available.")
+    with col_hm2:
+        if by_hour is not None and len(by_hour) > 0:
+            pivot_hour = by_hour.pivot_table(index='Employee', columns='Hour', values='mean', aggfunc='mean')
+            if len(pivot_hour) > 0:
+                pivot_hour = pivot_hour.reindex(sorted(pivot_hour.columns), axis=1)
+                pivot_hour.columns = [f"{int(c):02d}:00" for c in pivot_hour.columns]
+                fig_hour = px.imshow(pivot_hour.fillna(0), title="Avg Sales by Hour (£)", labels=dict(x="Hour", y="Employee", color="Avg £"), color_continuous_scale='Greens', aspect='auto')
+                fig_hour.update_layout(height=min(400, 80 + len(pivot_hour) * 25))
+                render_chart(fig_hour)
+            else:
+                st.caption("No hourly data available.")
+        else:
+            st.caption("No hourly data. Add a Time column to your data for hour-based insights.")
+    # --- Scheduling Guidance ---
+    st.subheader("🎯 Scheduling Guidance")
+    g_day, g_hour = st.columns(2)
+    with g_day:
+        sel_day = st.selectbox("Select day", day_order, key="bt_day")
+    with g_hour:
+        hour_options = ["All hours"] + [f"{h:02d}:00" for h in range(24)]
+        sel_hour = st.selectbox("Select hour (optional)", hour_options, key="bt_hour")
+    sel_hour_num = int(sel_hour.split(":")[0]) if sel_hour != "All hours" else None
+    day_data = by_day[by_day['Day'] == sel_day]
+    if len(day_data) > 0:
+        top_day = day_data.nlargest(team_size, 'Total')
+        rec_names = top_day['Employee'].tolist()
+        rec_total = top_day['Total'].sum()
+        if by_hour is not None and sel_hour_num is not None:
+            hour_data = by_hour[(by_hour['Employee'].isin(rec_names)) & (by_hour['Hour'] == sel_hour_num)]
+            if len(hour_data) > 0:
+                hour_data = hour_data.sort_values('sum', ascending=False).head(team_size)
+                rec_names = hour_data['Employee'].tolist()
+                rec_total = hour_data['sum'].sum()
+                num_slots = score_df[score_df['Hour'] == sel_hour_num]['Date'].nunique()
+                avg_per_slot = rec_total / num_slots if num_slots > 0 else rec_total
+                st.success(f"**Recommended for {sel_day} at {sel_hour}:** " + ", ".join(rec_names) + f" (avg ~£{avg_per_slot:,.2f} per {sel_hour} slot)")
+                st.caption(f"These employees have the highest sales in this hour. Avg based on {num_slots} occurrence(s) in date range.")
+            else:
+                num_days = score_df_pre_hour[score_df_pre_hour['Day of the Week'] == sel_day]['Date'].nunique()
+                avg_per_day = rec_total / num_days if num_days > 0 else rec_total
+                st.success(f"**Recommended for {sel_day}:** " + ", ".join(rec_names) + f" (avg ~£{avg_per_day:,.2f} per {sel_day})")
+                st.caption(f"No hourly data for {sel_hour}. Showing day-based avg.")
+        else:
+            num_days = score_df_pre_hour[score_df_pre_hour['Day of the Week'] == sel_day]['Date'].nunique()
+            avg_per_day = rec_total / num_days if num_days > 0 else rec_total
+            st.success(f"**Recommended for {sel_day}:** " + ", ".join(rec_names) + f" (avg ~£{avg_per_day:,.2f} per {sel_day})")
+            st.caption(f"These employees have the highest total sales on {sel_day}s. Avg based on {num_days} {sel_day}(s) in date range.")
+    else:
+        st.info(f"No data for {sel_day} in the selected date range.")
+    # --- Recommended team by day ---
+    st.subheader("📊 Recommended team by day")
+    recommendations = []
+    for day in day_order:
+        day_data = by_day[by_day['Day'] == day].sort_values('Total', ascending=False).reset_index(drop=True)
+        if len(day_data) == 0:
+            recommendations.append({'Day': day, '1st Best': '-', 'Total 1st': 0, '2nd Best': '-', 'Total 2nd': 0, '3rd Best': '-', 'Total 3rd': 0})
+            continue
+        def _team_row(start_idx, size):
+            subset = day_data.iloc[start_idx:start_idx + size]
+            if len(subset) == 0:
+                return '-', 0
+            return ', '.join(subset['Employee'].tolist()), subset['Total'].sum()
+        names1, est1 = _team_row(0, team_size)
+        names2, est2 = _team_row(team_size, team_size)
+        names3, est3 = _team_row(team_size * 2, team_size)
+        recommendations.append({'Day': day, '1st Best': names1, 'Total 1st': est1, '2nd Best': names2, 'Total 2nd': est2, '3rd Best': names3, 'Total 3rd': est3})
+    rec_df = pd.DataFrame(recommendations)
+    st.dataframe(rec_df, use_container_width=True, hide_index=True, column_config={
+        'Day': st.column_config.TextColumn('Day'),
+        '1st Best': st.column_config.TextColumn('1st best team'),
+        'Total 1st': st.column_config.NumberColumn('Total sales (in range)', format='£%.2f'),
+        '2nd Best': st.column_config.TextColumn('2nd best team'),
+        'Total 2nd': st.column_config.NumberColumn('Total sales (in range)', format='£%.2f'),
+        '3rd Best': st.column_config.TextColumn('3rd best team'),
+        'Total 3rd': st.column_config.NumberColumn('Total sales (in range)', format='£%.2f'),
+    })
+    st.info("💡 Use the heatmaps and profiles to match employees to their strongest days and hours. Consider availability and preferences when scheduling.")
+
+
 def main():
     # Session state for UI preferences
-    if "dark_mode" not in st.session_state:
-        st.session_state.dark_mode = False
     if "tab_index" not in st.session_state:
         st.session_state.tab_index = 0
 
-    dark_mode = st.session_state.dark_mode
-    inject_css(dark_mode)
+    inject_css()
 
-    st.markdown('<div class="main-header">📊 Complete Sales Analytics Dashboard</div>', unsafe_allow_html=True)
+    # Header will be rendered after we have filtered_sales
 
     # Load all data with loading spinner
     with st.spinner("Loading sales data..."):
@@ -1132,11 +1442,6 @@ def main():
     
     # Sidebar filters
     st.sidebar.header("🔍 Filters")
-    st.session_state.dark_mode = st.sidebar.toggle(
-        "🌙 Dark mode",
-        value=st.session_state.dark_mode,
-        help="Switch between light and dark theme for the dashboard"
-    )
 
     # Shop filter
     if 'Shop' in sales_df.columns:
@@ -1159,48 +1464,7 @@ def main():
         else:
             st.sidebar.caption("📁 **Data source:** Local CSV files")
     
-    # Debug section for data/columns (helps diagnose missing employees)
-    with st.sidebar.expander("🔍 Debug: Data & Columns", expanded=False):
-        if sales_df is not None and len(sales_df) > 0:
-            st.write(f"**Total rows:** {len(sales_df):,}")
-            st.write(f"**Columns from Supabase:** {list(sales_df.columns)}")
-            if 'Employee' in sales_df.columns:
-                emp_count = sales_df['Employee'].dropna().nunique()
-                emp_sample = sales_df['Employee'].dropna().unique()[:10].tolist()
-                st.write(f"**Unique employees:** {emp_count}")
-                st.write(f"**Sample employees:** {emp_sample}")
-                # Show potential duplicates (similar names that may need mapping)
-                similar = find_similar_employee_names(sales_df)
-                if similar:
-                    st.write("**⚠️ Potential duplicates** (add to EMPLOYEE_NAME_MAPPING in dashboard.py):")
-                    for norm, names in list(similar.items())[:5]:
-                        st.write(f"  `{names[0]}` ← map from: {names[1:]}")
-            else:
-                st.write("❌ **'Employee' column not found** — check your Supabase table has an 'Employee' column (or 'employee' after import)")
-            if 'Refunds' in sales_df.columns:
-                raw_refunds_sum = sales_df['Refunds'].sum()
-                st.write(f"**Refunds sum:** {raw_refunds_sum:.2f}")
-            comm_col = next((c for c in sales_df.columns if str(c).strip().lower() in ('commissions', 'commission')), None)
-            if comm_col:
-                sample = sales_df[comm_col].dropna().head(3).tolist()
-                st.write(f"**Commission column:** {comm_col} | Sample: {sample}")
-                st.caption("Attribution from Supabase: Commission = who gets credit; Employee = who processed. Refunds follow Commission.")
-            time_cols = [c for c in sales_df.columns if 'time' in str(c).lower() or str(c).lower() in ('timestamp', 'created_at')]
-            hour_ok = 'Hour' in sales_df.columns and sales_df['Hour'].notna().any()
-            if time_cols:
-                sample = sales_df[time_cols[0]].dropna().iloc[0] if sales_df[time_cols[0]].notna().any() else "N/A"
-                st.write(f"**Time column:** {time_cols[0]} | Sample: `{sample}` | Hour parsed: {'✓' if hour_ok else '✗'}")
-            else:
-                st.write("**Time column:** Not found (hourly patterns need Time, timestamp, created_at, transaction_time)")
-            if not hour_ok:
-                st.caption("💡 Add a Time column to your Supabase table (e.g. `time`, `created_at`, `timestamp`) with values like `09:53:04` or `2023-07-14T09:53:04+00`. Or ensure your Date column includes full datetime.")
-        else:
-            st.write("❌ No sales data loaded")
-    
     st.sidebar.caption("💡 **Tip:** Data loads directly from Supabase. Click 'Refresh Data' to see updates.")
-    
-    with st.sidebar.expander("👤 Mark employees active/inactive", expanded=True):
-        st.caption("Go to the **Employee Status** tab in the main area to mark employees as active or inactive. Use the Status dropdown for each employee, then click **Save Employee Status**.")
     
     # Apply shop filter to get working dataset
     if selected_shop != 'All Shops' and 'Shop' in sales_df.columns:
@@ -1226,28 +1490,7 @@ def main():
     # Load employee active/inactive status
     employee_status = load_employee_status()
     
-    # Get unique employees from Commission_Employee (who gets credit) when available, else Employee
-    emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
-    if emp_col in work_df.columns:
-        unique_employees = work_df[emp_col].dropna().unique()
-        unique_employees = [str(emp).strip() for emp in unique_employees if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
-        unique_employees = sorted(list(set(unique_employees)))
-    else:
-        unique_employees = []
-    # Separate active and inactive for display
-    active_employees = [e for e in unique_employees if is_employee_active(e, employee_status)]
-    inactive_employees = [e for e in unique_employees if not is_employee_active(e, employee_status)]
-    
-    # Employee filter: show active first, then inactive with label
-    show_inactive_in_filter = st.sidebar.checkbox("Include inactive employees in filter", value=True, help="Uncheck to hide inactive employees from the Employee dropdown")
-    if show_inactive_in_filter:
-        emp_options = ['All'] + active_employees + [f"{e} (inactive)" for e in inactive_employees]
-    else:
-        emp_options = ['All'] + active_employees
-    selected_employee_raw = st.sidebar.selectbox("Select Employee", emp_options, help="View analytics for a specific employee or All for combined view")
-    # Normalize selection (strip "(inactive)" for filtering and display)
-    selected_employee = selected_employee_raw.replace(" (inactive)", "").strip() if selected_employee_raw != 'All' else 'All'
-    
+    # Date range selection must come first so we can filter employees by who has data in that range
     if work_df['Date'].notna().any():
         min_date = work_df['Date'].min().date()
         max_date = work_df['Date'].max().date()
@@ -1272,16 +1515,16 @@ def main():
             end_date = max_date
         elif use_preset == "Last 7 Days":
             end_date = max_date
-            start_date = max_date - timedelta(days=7)
+            start_date = max_date - timedelta(days=6)  # 7 days inclusive
         elif use_preset == "Last 30 Days":
             end_date = max_date
-            start_date = max_date - timedelta(days=30)
+            start_date = max_date - timedelta(days=29)  # 30 days inclusive
         elif use_preset == "Last 90 Days":
             end_date = max_date
-            start_date = max_date - timedelta(days=90)
+            start_date = max_date - timedelta(days=89)  # 90 days inclusive
         elif use_preset == "Last Year":
             end_date = max_date
-            start_date = max_date - timedelta(days=365)
+            start_date = max_date - timedelta(days=364)  # 365 days inclusive
         elif use_preset == "YTD":
             start_date = max(min_date, max_date.replace(month=1, day=1))
             end_date = max_date
@@ -1314,16 +1557,44 @@ def main():
             (work_df['Date'].dt.date >= start_date) & 
             (work_df['Date'].dt.date <= end_date)
         ]
-        date_filtered_sales = filtered_sales.copy()  # All employees in date range (before employee filter)
         
         # Display selected range
         st.sidebar.caption(f"📆 {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}")
     else:
         filtered_sales = work_df
-        date_filtered_sales = work_df.copy()
         # Set default dates if no date data
         start_date = None
         end_date = None
+    
+    # Get unique employees from the DATE-FILTERED data (only those with transactions in the selected range)
+    emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+    if emp_col in filtered_sales.columns:
+        unique_employees_in_range = filtered_sales[emp_col].dropna().unique()
+        unique_employees_in_range = [str(emp).strip() for emp in unique_employees_in_range if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
+        unique_employees_in_range = sorted(list(set(unique_employees_in_range)))
+    else:
+        unique_employees_in_range = []
+    # All employees (for Employee Status tab - so you can mark anyone active/inactive)
+    if emp_col in work_df.columns:
+        unique_employees_all = work_df[emp_col].dropna().unique()
+        unique_employees_all = [str(emp).strip() for emp in unique_employees_all if pd.notna(emp) and str(emp).strip() not in ['', 'nan', 'NaN', 'None']]
+        unique_employees_all = sorted(list(set(unique_employees_all)))
+    else:
+        unique_employees_all = []
+    # Separate active and inactive (from date range - for dropdown)
+    active_employees = [e for e in unique_employees_in_range if is_employee_active(e, employee_status)]
+    inactive_employees = [e for e in unique_employees_in_range if not is_employee_active(e, employee_status)]
+    
+    # Employee filter: show active first, then inactive with label (inactive = only those in date range)
+    show_inactive_in_filter = st.sidebar.checkbox("Include inactive employees in filter", value=True, help="When checked, shows inactive employees who have transactions in the selected date range")
+    if show_inactive_in_filter:
+        emp_options = ['All'] + active_employees + [f"{e} (inactive)" for e in inactive_employees]
+    else:
+        emp_options = ['All'] + active_employees
+    select_key = f"emp_select_{start_date}_{end_date}" if (start_date is not None and end_date is not None) else "emp_select_all"
+    selected_employee_raw = st.sidebar.selectbox("Select Employee", emp_options, key=select_key, help="View analytics for a specific employee or All for combined view")
+    # Normalize selection (strip "(inactive)" for filtering and display)
+    selected_employee = selected_employee_raw.replace(" (inactive)", "").strip() if selected_employee_raw != 'All' else 'All'
     
     if selected_employee != 'All':
         # Filter by Commission_Employee (who gets credit) when available, else Employee (who processed)
@@ -1369,14 +1640,35 @@ def main():
             st.error("Employee/Commission column not found in data!")
             filtered_sales = pd.DataFrame()  # Empty DataFrame
     
-    # Employee-specific header
+    # When "Include inactive employees" is unchecked and viewing All, filter to active only
+    if selected_employee == 'All' and not show_inactive_in_filter and active_employees:
+        emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+        if emp_col in filtered_sales.columns:
+            filtered_sales = filtered_sales[filtered_sales[emp_col].isin(active_employees)].copy()
+    
+    # Employee_df for "All" view: filter to active only when inactive are excluded
+    employee_df_display = employee_df
+    if employee_df is not None and selected_employee == 'All' and not show_inactive_in_filter and active_employees:
+        employee_df_display = employee_df[employee_df['Employee'].isin(active_employees)].copy()
+    
+    # Employee-specific context banner (styled, not st.info)
     if selected_employee != 'All':
+        date_range_str = (f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" 
+                         if start_date is not None and end_date is not None else "All dates")
         if len(filtered_sales) > 0:
-            date_range_str = f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if start_date and end_date else "All dates"
-            st.info(f"👤 **Viewing analytics for: {selected_employee}** | 📅 **Date Range:** {date_range_str} | 📊 **{len(filtered_sales):,} transactions**")
+            st.markdown(f"""
+            <div class="context-banner">
+                <span>👤</span>
+                <span><strong>{selected_employee}</strong> · {date_range_str} · <strong>{len(filtered_sales):,}</strong> transactions</span>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            date_range_str = f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if start_date and end_date else "All dates"
-            st.warning(f"⚠️ **No data found for: {selected_employee}** | 📅 **Date Range:** {date_range_str}")
+            st.markdown(f"""
+            <div class="context-banner warning">
+                <span>⚠️</span>
+                <span>No data for <strong>{selected_employee}</strong> in {date_range_str}</span>
+            </div>
+            """, unsafe_allow_html=True)
             # Show available employees for debugging
             with st.expander("🔍 Debug: Available Employees"):
                 debug_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
@@ -1411,33 +1703,31 @@ def main():
         **Note:** Data is cached 1 hour. Use "Refresh Data" to see updates.
         """)
 
+    # Page title
+    st.title("📊 Sales Analytics for Opatra & PYT")
+
     # Active filter summary bar
     date_str = (f"{start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" 
                if (start_date is not None and end_date is not None) else "All dates")
     shop_badge = selected_shop if selected_shop != 'All Shops' else "All Shops"
     emp_badge = selected_employee if selected_employee != 'All' else "All Employees"
+    tx_count = f"{len(filtered_sales):,}"
     st.markdown(f"""
     <div class="filter-summary">
         <span class="filter-badge">🏪 {shop_badge}</span>
         <span class="filter-badge">👤 {emp_badge}</span>
         <span class="filter-badge">📅 {date_str}</span>
-        <span class="filter-badge">📊 {len(filtered_sales):,} transactions</span>
+        <span class="filter-badge-muted">📊 {tx_count} transactions</span>
     </div>
     """, unsafe_allow_html=True)
-
-    # Whether date range is "All Time" (no date filter or full range) - used by analytics tabs
-    if start_date is None and end_date is None:
-        date_range_is_all_time = True
-    else:
-        date_range_is_all_time = (start_date == min_date and end_date == max_date)
 
     # Empty state when no data
     if len(filtered_sales) == 0:
         st.markdown("""
         <div class="empty-state">
-            <div class="empty-state-icon">📭</div>
+            <div class="empty-state-icon">📊</div>
             <h3>No sales data for the selected filters</h3>
-            <p>Try adjusting the date range, employee, or shop.</p>
+            <p>Try adjusting the date range, employee, or shop to see analytics.</p>
         </div>
         """, unsafe_allow_html=True)
         st.stop()
@@ -1627,27 +1917,23 @@ def main():
     
     st.divider()
 
-    # Quick navigation hint
-    tab_names = ["Daily Trends", "Day of Week", "Employee Status", "Employee Performance", "Hourly Patterns", "Product Patterns", "Future Projections", "Best Team", "Trends & Seasonality", "Shop Comparison", "Transaction Analytics", "Advanced Insights"]
-    st.caption("📑 **Sections:** " + " • ".join(tab_names))
-
-    # Create tabs for different analyses (Employee Status early for visibility)
+    # Create tabs for different analyses
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
-        "📅 Daily Trends", 
-        "📆 Day of Week Analysis", 
+        "📅 Daily Trends",
+        "📆 Day of Week",
         "👤 Employee Status",
-        "👥 Employee Performance", 
-        "⏰ Hourly Patterns", 
-        "🛍️ Product Patterns", 
+        "👥 Employee Performance",
+        "⏰ Hourly Patterns",
+        "🛍️ Product Patterns",
         "🔮 Future Projections",
-        "🏆 Best Team for Week",
+        "🏆 Best Team",
         "📈 Trends & Seasonality",
         "🏪 Shop Comparison",
         "🛒 Transaction Analytics",
-        "🔍 Advanced Insights"
+        "🔍 Advanced Insights",
     ])
-    
-    # TAB 1: Daily Trends Analysis
+
+    # TAB 1: Daily Trends
     with tab1:
         if selected_employee != 'All':
             st.header(f"📅 Daily Sales Trends - {selected_employee}")
@@ -1672,7 +1958,7 @@ def main():
             )
             fig.update_traces(mode='lines+markers', line=dict(width=2))
             fig.update_layout(height=400)
-            render_chart(fig, dark_mode)
+            render_chart(fig)
         
         with col2:
             title = f'Moving Averages - {selected_employee}' if selected_employee != 'All' else 'Moving Averages'
@@ -1708,179 +1994,196 @@ def main():
                 yaxis_title='Net Sales (£)',
                 height=400
             )
-            render_chart(fig, dark_mode)
+            render_chart(fig)
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Daily Statistics")
-            if len(daily_sales) > 0:
-                st.write(f"**Average Daily Sales:** £{daily_sales['Net_Sales'].mean():,.2f}")
-                best_day_idx = daily_sales['Net_Sales'].idxmax()
-                worst_day_idx = daily_sales['Net_Sales'].idxmin()
-                st.write(f"**Best Day:** {daily_sales.loc[best_day_idx, 'Date'].strftime('%Y-%m-%d')} - £{daily_sales.loc[best_day_idx, 'Net_Sales']:,.2f}")
-                st.write(f"**Worst Day:** {daily_sales.loc[worst_day_idx, 'Date'].strftime('%Y-%m-%d')} - £{daily_sales.loc[worst_day_idx, 'Net_Sales']:,.2f}")
-                st.write(f"**Standard Deviation:** £{daily_sales['Net_Sales'].std():,.2f}")
-            else:
-                st.info("No data available for the selected filters.")
-        
-        with col2:
-            title = f'Monthly Comparison - {selected_employee}' if selected_employee != 'All' else 'Monthly Sales Comparison'
-            st.subheader("Monthly Comparison")
-            monthly_comparison = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M'))['Net_Sales'].sum()
-            monthly_df = pd.DataFrame({
-                'Month': monthly_comparison.index.astype(str),
-                'Net_Sales': monthly_comparison.values
-            })
-            fig = px.bar(
-                monthly_df,
-                x='Month',
-                y='Net_Sales',
-                labels={'Net_Sales': 'Net Sales (£)'},
-                title=title
-            )
-            fig.update_layout(height=300)
-            render_chart(fig, dark_mode)
-    
-    # TAB 2: Day of Week Analysis
+        st.caption("📊 For best/worst day and monthly trends, see **Trends & Seasonality** tab.")
+
+    # TAB 2: Day of Week
     with tab2:
         if selected_employee != 'All':
             st.header(f"📆 Day of Week Analysis - {selected_employee}")
         else:
             st.header("📆 Day of Week Analysis")
         
-        # Always calculate from filtered_sales to respect date range and employee filters
-        if len(filtered_sales) == 0:
-            st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
-        else:
-            # Make a copy to work with
-            work_df = filtered_sales.copy()
-            # Ensure Day of Week column exists - calculate from Date if needed
-            if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
-                if 'Date' in work_df.columns and work_df['Date'].notna().any():
-                    work_df['Day of the Week'] = work_df['Date'].dt.day_name()
-                else:
-                    st.error("No date data available to calculate day of week.")
-                    st.stop()
-            day_col = 'Day of the Week'
-            # Filter out rows with null day of week
-            valid_sales = work_df[work_df[day_col].notna()].copy()
-            if len(valid_sales) > 0:
+        # Use pre-aggregated data only if viewing all employees AND data exists
+        # Otherwise, always calculate from filtered_sales to show employee-specific patterns
+        if selected_employee == 'All' and day_of_week_df is not None:
+            # Use pre-aggregated data when viewing all employees
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Sales by Day of Week")
                 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                # Group by day of week
-                day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
-                day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
-                # Get gross sales
-                gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
-                gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
-                day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
-                day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
-                # Reindex to ensure all days are in order and fill missing days
-                day_sales = day_sales.set_index('Day')
-                for day in day_order:
-                    if day not in day_sales.index:
-                        day_sales.loc[day] = [0, 0, 0, 0, 0]
-                day_sales = day_sales.reindex(day_order)
-                # Reset index to make Day a column for easier plotting
-                day_sales_plot = day_sales.reset_index()
-                col1, col2 = st.columns(2)
-                with col1:
-                    title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
-                    st.subheader("Sales by Day of Week")
-                    fig = px.bar(
-                        day_sales_plot,
-                        x='Day',
-                        y='Net_Sales_Sum',
-                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Day': 'Day of Week'},
-                        color='Net_Sales_Sum',
-                        color_continuous_scale='Blues',
-                        title=title
-                    )
-                    fig.update_layout(
-                        height=400,
-                        showlegend=False,
-                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                    )
-                    render_chart(fig, dark_mode)
-                with col2:
-                    title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
-                    st.subheader("Average Transaction by Day")
-                    fig = px.bar(
-                        day_sales_plot,
-                        x='Day',
-                        y='Net_Sales_Mean',
-                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
-                        color='Net_Sales_Mean',
-                        color_continuous_scale='Greens',
-                        title=title
-                    )
-                    fig.update_layout(
-                        height=400,
-                        showlegend=False,
-                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                    )
-                    render_chart(fig, dark_mode)
-                col1, col2 = st.columns(2)
-                with col1:
-                    title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
-                    st.subheader("Transaction Count by Day")
-                    fig = px.bar(
-                        day_sales_plot,
-                        x='Day',
-                        y='Transaction_Count',
-                        labels={'Transaction_Count': 'Number of Transactions', 'Day': 'Day of Week'},
-                        color='Transaction_Count',
-                        color_continuous_scale='Oranges',
-                        title=title
-                    )
-                    fig.update_layout(
-                        height=400,
-                        showlegend=False,
-                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
-                    )
-                    render_chart(fig, dark_mode)
-                with col2:
-                    st.subheader("Day of Week Summary Table")
-                    display_df = day_sales_plot.copy()
-                    display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
-                    display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
-                    display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
-                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                day_of_week_df_ordered = day_of_week_df.set_index('Day').reindex([d for d in day_order if d in day_of_week_df['Day'].values])
+                
+                fig = px.bar(
+                    day_of_week_df_ordered,
+                    x=day_of_week_df_ordered.index,
+                    y='Net_Sales_Sum',
+                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'index': 'Day of Week'},
+                    color='Net_Sales_Sum',
+                    color_continuous_scale='Blues'
+                )
+                fig.update_layout(height=400, showlegend=False)
+                render_chart(fig)
+            
+            with col2:
+                st.subheader("Average Transaction by Day")
+                fig = px.bar(
+                    day_of_week_df_ordered,
+                    x=day_of_week_df_ordered.index,
+                    y='Net_Sales_Mean',
+                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'index': 'Day of Week'},
+                    color='Net_Sales_Mean',
+                    color_continuous_scale='Greens'
+                )
+                fig.update_layout(height=400, showlegend=False)
+                render_chart(fig)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Transaction Count by Day")
+                fig = px.bar(
+                    day_of_week_df_ordered,
+                    x=day_of_week_df_ordered.index,
+                    y='Transaction_Count',
+                    labels={'Transaction_Count': 'Number of Transactions', 'index': 'Day of Week'},
+                    color='Transaction_Count',
+                    color_continuous_scale='Oranges'
+                )
+                fig.update_layout(height=400, showlegend=False)
+                render_chart(fig)
+            
+            with col2:
+                st.subheader("Day of Week Summary Table")
+                display_df = day_of_week_df_ordered.reset_index()
+                display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
+                display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+        else:
+            # Calculate from filtered data (supports employee filtering)
+            if len(filtered_sales) == 0:
+                st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
             else:
-                st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
+                # Make a copy to work with
+                work_df = filtered_sales.copy()
+                
+                # Ensure Day of Week column exists - calculate from Date if needed
+                if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
+                    if 'Date' in work_df.columns and work_df['Date'].notna().any():
+                        work_df['Day of the Week'] = work_df['Date'].dt.day_name()
+                    else:
+                        st.error("No date data available to calculate day of week.")
+                        st.stop()
+                
+                day_col = 'Day of the Week'
+                
+                # Filter out rows with null day of week
+                valid_sales = work_df[work_df[day_col].notna()].copy()
+                
+                if len(valid_sales) > 0:
+                    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    
+                    # Group by day of week
+                    day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
+                    day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
+                    
+                    # Get gross sales
+                    gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
+                    gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
+                    day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
+                    day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
+                    
+                    # Reindex to ensure all days are in order and fill missing days
+                    day_sales = day_sales.set_index('Day')
+                    for day in day_order:
+                        if day not in day_sales.index:
+                            day_sales.loc[day] = [0, 0, 0, 0, 0]
+                    
+                    day_sales = day_sales.reindex(day_order)
+                    
+                    # Reset index to make Day a column for easier plotting
+                    day_sales_plot = day_sales.reset_index()
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
+                        st.subheader("Sales by Day of Week")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Net_Sales_Sum',
+                            labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Day': 'Day of Week'},
+                            color='Net_Sales_Sum',
+                            color_continuous_scale='Blues',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        render_chart(fig)
+                    
+                    with col2:
+                        title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
+                        st.subheader("Average Transaction by Day")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Net_Sales_Mean',
+                            labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
+                            color='Net_Sales_Mean',
+                            color_continuous_scale='Greens',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        render_chart(fig)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
+                        st.subheader("Transaction Count by Day")
+                        fig = px.bar(
+                            day_sales_plot,
+                            x='Day',
+                            y='Transaction_Count',
+                            labels={'Transaction_Count': 'Number of Transactions', 'Day': 'Day of Week'},
+                            color='Transaction_Count',
+                            color_continuous_scale='Oranges',
+                            title=title
+                        )
+                        fig.update_layout(
+                            height=400, 
+                            showlegend=False,
+                            xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                        )
+                        render_chart(fig)
+                    
+                    with col2:
+                        st.subheader("Day of Week Summary Table")
+                        display_df = day_sales_plot.copy()
+                        display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
+                        display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
+                        display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
+                        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                else:
+                    st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
-    # TAB 3: Employee Status (active/inactive) - placed early for visibility
+    # TAB 3: Employee Status
     with tab3:
-        st.header("👤 Employee Status")
-        st.caption("Mark employees as active or inactive. Inactive employees are excluded from Best Team recommendations.")
-        status_dict = load_employee_status()
-        for emp in unique_employees:
-            if emp not in status_dict:
-                status_dict[emp] = 'active'
-        status_df = pd.DataFrame([
-            {'Employee': emp, 'Status': status_dict.get(emp, 'active')}
-            for emp in sorted(unique_employees)
-        ])
-        edited = st.data_editor(
-            status_df,
-            column_config={
-                'Employee': st.column_config.TextColumn('Employee', disabled=True, help="Employee name"),
-                'Status': st.column_config.SelectboxColumn('Status', options=['active', 'inactive'], required=True, help="Active = included in Best Team; Inactive = excluded from recommendations"),
-            },
-            use_container_width=True,
-            hide_index=True,
-            key='employee_status_editor'
-        )
-        if st.button("💾 Save Employee Status", key='save_status'):
-            new_status = {row['Employee']: row['Status'] for _, row in edited.iterrows()}
-            if save_employee_status(new_status):
-                st.success("✅ Employee status saved.")
-                st.rerun()
-            else:
-                st.error("Could not save. Check Supabase connection or file permissions.")
+        _render_employee_status_tab(unique_employees_all)
 
     # TAB 4: Employee Performance
     with tab4:
@@ -1918,10 +2221,10 @@ def main():
                 if len(comparison_sales) > len(filtered_sales):
                     st.subheader("📈 Performance Comparison")
                     comp_col1, comp_col2, comp_col3 = st.columns(3)
-                    
+                    comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in comparison_sales.columns else 'Employee'
                     all_avg_sale = comparison_sales['Net_Sales'].mean()
                     all_total = comparison_sales['Net_Sales'].sum()
-                    all_employee_count = comparison_sales['Employee'].nunique()
+                    all_employee_count = comparison_sales[comp_emp_col].nunique()
                     avg_per_employee = all_total / all_employee_count if all_employee_count > 0 else 0
                     
                     with comp_col1:
@@ -1935,8 +2238,8 @@ def main():
                                  delta=f"{vs_total:+.1f}%", delta_color="normal" if vs_total >= 0 else "inverse")
                     
                     with comp_col3:
-                        # Rank among all employees
-                        employee_totals = comparison_sales.groupby('Employee')['Net_Sales'].sum().sort_values(ascending=False)
+                        # Rank among all employees (by commission attribution)
+                        employee_totals = comparison_sales.groupby(comp_emp_col)['Net_Sales'].sum().sort_values(ascending=False)
                         rank = (employee_totals.index.get_loc(selected_employee) + 1) if selected_employee in employee_totals.index else None
                         total_employees = len(employee_totals)
                         if rank:
@@ -1972,7 +2275,7 @@ def main():
                             title=f'Top Products - {selected_employee}'
                         )
                         fig.update_layout(height=400, xaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
+                        render_chart(fig)
                 
                 # Employee's performance over time
                 st.subheader("📈 Sales Trend")
@@ -1987,20 +2290,17 @@ def main():
                     title=f'Monthly Sales Trend - {selected_employee}'
                 )
                 fig.update_layout(height=400)
-                render_chart(fig, dark_mode)
+                render_chart(fig)
                 
         else:
             st.header("👥 Employee Performance Analysis")
         
-        # Use date-filtered employee data when a date range is selected
-        emp_perf_df = employee_df if date_range_is_all_time and employee_df is not None else _compute_employee_performance_from_sales(date_filtered_sales)
-        
-        if emp_perf_df is not None:
+        if employee_df_display is not None:
             col1, col2 = st.columns(2)
             
             with col1:
                 st.subheader("Top Employees by Total Sales")
-                top_employees = emp_perf_df.nlargest(15, 'Net_Sales_Sum')
+                top_employees = employee_df_display.nlargest(15, 'Net_Sales_Sum')
                 fig = px.bar(
                     top_employees,
                     x='Net_Sales_Sum',
@@ -2011,11 +2311,11 @@ def main():
                     color_continuous_scale='Blues'
                 )
                 fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
-                render_chart(fig, dark_mode)
+                render_chart(fig)
             
             with col2:
                 st.subheader("Top Employees by Average Transaction")
-                top_avg = emp_perf_df[emp_perf_df['Transaction_Count'] >= 10].nlargest(15, 'Net_Sales_Mean')
+                top_avg = employee_df_display[employee_df_display['Transaction_Count'] >= 10].nlargest(15, 'Net_Sales_Mean')
                 fig = px.bar(
                     top_avg,
                     x='Net_Sales_Mean',
@@ -2026,13 +2326,13 @@ def main():
                     color_continuous_scale='Greens'
                 )
                 fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
-                render_chart(fig, dark_mode)
+                render_chart(fig)
             
             col1, col2 = st.columns(2)
             
             with col1:
                 st.subheader("Transaction Volume by Employee")
-                top_volume = emp_perf_df.nlargest(15, 'Transaction_Count')
+                top_volume = employee_df_display.nlargest(15, 'Transaction_Count')
                 fig = px.bar(
                     top_volume,
                     x='Transaction_Count',
@@ -2043,11 +2343,11 @@ def main():
                     color_continuous_scale='Oranges'
                 )
                 fig.update_layout(height=500, showlegend=False, xaxis_tickformat=".2f")
-                render_chart(fig, dark_mode)
+                render_chart(fig)
             
             with col2:
                 st.subheader("Refund Rate Analysis")
-                refund_analysis = emp_perf_df[emp_perf_df['Refund_Rate'] > 0].sort_values('Refund_Rate', ascending=False)
+                refund_analysis = employee_df_display[employee_df_display['Refund_Rate'] > 0].sort_values('Refund_Rate', ascending=False)
                 if len(refund_analysis) > 0:
                     fig = px.bar(
                         refund_analysis.head(10),
@@ -2059,13 +2359,21 @@ def main():
                         color_continuous_scale='Reds'
                     )
                     fig.update_layout(height=400, showlegend=False, xaxis_tickformat=".2f")
-                    render_chart(fig, dark_mode)
+                    render_chart(fig)
                 else:
                     st.info("No refunds recorded for any employees")
             
             st.subheader("Complete Employee Performance Table")
-            export_df = emp_perf_df.sort_values('Net_Sales_Sum', ascending=False).copy()
-            export_df.columns = ['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']
+            export_df = employee_df_display.sort_values('Net_Sales_Sum', ascending=False).copy()
+            export_df = export_df.rename(columns={
+                'Net_Sales_Sum': 'Total Net Sales',
+                'Net_Sales_Mean': 'Average Sale',
+                'Transaction_Count': 'Transaction Count',
+                'Gross_Sales_Sum': 'Total Gross Sales',
+                'Refunds_Sum': 'Refunds Sum',
+                'Refund_Rate': 'Refund Rate',
+            })
+            export_df = export_df[['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']]
             col_export, _ = st.columns([1, 4])
             with col_export:
                 st.download_button("📥 Export CSV", export_df.to_csv(index=False), "employee_performance.csv", "text/csv", help="Download table as CSV")
@@ -2085,70 +2393,133 @@ def main():
         else:
             st.header("⏰ Hourly Sales Patterns")
         
-        # Always calculate from filtered_sales to respect date range and employee filters
-        if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
-            hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
-            hourly_sales.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
-            hourly_sales = hourly_sales.sort_values('Hour')
-            hourly_sales['Gross_Sales_Sum'] = filtered_sales.groupby('Hour')['Gross_Sales'].sum().values
-            col1, col2 = st.columns(2)
-            with col1:
-                title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
-                st.subheader("Sales by Hour of Day")
-                fig = px.bar(
-                    hourly_sales,
-                    x='Hour',
-                    y='Net_Sales_Sum',
-                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
-                    color='Net_Sales_Sum',
-                    color_continuous_scale='Purples',
-                    title=title
+        # Use pre-aggregated data only if no employee filter is applied
+        # Otherwise, calculate from filtered_sales to show employee-specific patterns
+        if selected_employee != 'All' or 'Hour' not in filtered_sales.columns or hourly_df is None:
+            # Calculate from filtered data (supports employee filtering)
+            if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any():
+                hourly_sales = filtered_sales.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
+                hourly_sales.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
+                hourly_sales = hourly_sales.sort_values('Hour')
+                hourly_sales['Gross_Sales_Sum'] = filtered_sales.groupby('Hour')['Gross_Sales'].sum().values
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
+                    st.subheader("Sales by Hour of Day")
+                    fig = px.bar(
+                        hourly_sales,
+                        x='Hour',
+                        y='Net_Sales_Sum',
+                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                        color='Net_Sales_Sum',
+                        color_continuous_scale='Purples',
+                        title=title
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    render_chart(fig)
+                
+                with col2:
+                    title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
+                    st.subheader("Average Transaction by Hour")
+                    fig = px.line(
+                        hourly_sales,
+                        x='Hour',
+                        y='Net_Sales_Mean',
+                        markers=True,
+                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                        title=title
+                    )
+                    fig.update_layout(height=400)
+                    render_chart(fig)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
+                    st.subheader("Transaction Volume by Hour")
+                    fig = px.bar(
+                        hourly_sales,
+                        x='Hour',
+                        y='Transaction_Count',
+                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                        color='Transaction_Count',
+                        color_continuous_scale='Blues',
+                        title=title
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    render_chart(fig)
+                
+                with col2:
+                    st.subheader("Peak Hours Analysis")
+                    peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
+                    if len(peak_hours) > 0:
+                        st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
+                        for idx, row in peak_hours.iterrows():
+                            hour_str = f"{int(row['Hour']):02d}:00"
+                            st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
+                    else:
+                        st.info("No hourly data available for the selected filters.")
+            else:
+                st.info(
+                    "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
+                    "with values like `09:53:04` or `2023-07-14T09:53:04+00`. Check Debug: Data & Columns for column names."
                 )
-                fig.update_layout(height=400, showlegend=False)
-                render_chart(fig, dark_mode)
-            with col2:
-                title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
-                st.subheader("Average Transaction by Hour")
-                fig = px.line(
-                    hourly_sales,
-                    x='Hour',
-                    y='Net_Sales_Mean',
-                    markers=True,
-                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
-                    title=title
-                )
-                fig.update_layout(height=400)
-                render_chart(fig, dark_mode)
-            col1, col2 = st.columns(2)
-            with col1:
-                title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
-                st.subheader("Transaction Volume by Hour")
-                fig = px.bar(
-                    hourly_sales,
-                    x='Hour',
-                    y='Transaction_Count',
-                    labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
-                    color='Transaction_Count',
-                    color_continuous_scale='Blues',
-                    title=title
-                )
-                fig.update_layout(height=400, showlegend=False)
-                render_chart(fig, dark_mode)
-            with col2:
-                st.subheader("Peak Hours Analysis")
-                peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
-                if len(peak_hours) > 0:
-                    st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
+        else:
+            # Use pre-aggregated data when viewing all employees
+            if hourly_df is not None:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Sales by Hour of Day")
+                    hourly_df_sorted = hourly_df.sort_values('Hour')
+                    fig = px.bar(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Net_Sales_Sum',
+                        labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                        color='Net_Sales_Sum',
+                        color_continuous_scale='Purples'
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    render_chart(fig)
+                
+                with col2:
+                    st.subheader("Average Transaction by Hour")
+                    fig = px.line(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Net_Sales_Mean',
+                        markers=True,
+                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                        title='Average Transaction Value by Hour'
+                    )
+                    fig.update_layout(height=400)
+                    render_chart(fig)
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Transaction Volume by Hour")
+                    fig = px.bar(
+                        hourly_df_sorted,
+                        x='Hour',
+                        y='Transaction_Count',
+                        labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                        color='Transaction_Count',
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(height=400, showlegend=False)
+                    render_chart(fig)
+                
+                with col2:
+                    st.subheader("Peak Hours Analysis")
+                    peak_hours = hourly_df_sorted.nlargest(5, 'Net_Sales_Sum')
+                    st.write("**Top 5 Peak Sales Hours:**")
                     for idx, row in peak_hours.iterrows():
                         hour_str = f"{int(row['Hour']):02d}:00"
                         st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
-                else:
-                    st.info("No hourly data available for the selected filters.")
-        else:
-            st.info(
-                "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
-                "with values like `09:53:04` or `2023-07-14T09:53:04+00`. Check Debug: Data & Columns for column names."
-            )
     
     # TAB 6: Product Patterns
     with tab6:
@@ -2157,131 +2528,222 @@ def main():
         else:
             st.header("🛍️ Product Patterns Analysis")
         
-        # Always calculate from filtered_sales to respect date range and employee filters
-        if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
-            # Extract product sales from filtered data
-            product_sales_dict = {}
-            product_count_dict = {}
-            product_amounts_dict = {}
-            for idx, row in filtered_sales.iterrows():
-                products = row['Products']
-                sale_amount = row['Net_Sales']
-                if pd.notna(products) and isinstance(products, str):
-                    items = [i.strip() for i in products.split(',') if i.strip()]
-                    for item in items:
-                        item = item.strip()
-                        if item.startswith('-') or 'x-' in item:
-                            continue
-                        if 'x' in item:
-                            try:
-                                pattern = r'^(.+?)\s+(\d+)x([\d.,£]+)$'
-                                match = re.match(pattern, item)
-                                if match:
-                                    product_name = match.group(1).strip()
-                                    quantity = int(match.group(2))
-                                    price_str = match.group(3).strip()
-                                    price_clean = price_str.replace('£', '').replace(',', '').strip()
-                                    price_match = re.search(r'(\d+\.?\d*)', price_clean)
-                                    if price_match:
-                                        price = float(price_match.group(1))
-                                        if price <= 0 or price > 50000:
-                                            continue
-                                    else:
-                                        continue
-                                    if product_name and len(product_name) > 0:
-                                        if product_name not in product_sales_dict:
-                                            product_sales_dict[product_name] = 0
-                                            product_count_dict[product_name] = 0
-                                        product_sales_dict[product_name] += price
-                                        product_count_dict[product_name] += quantity
-                                else:
-                                    continue
-                            except Exception:
+        # Use pre-aggregated data only if no employee filter is applied
+        # Otherwise, calculate from filtered_sales to show employee-specific patterns
+        if selected_employee != 'All' or product_df is None:
+            # Calculate from filtered data (supports employee filtering)
+            if 'Products' in filtered_sales.columns and filtered_sales['Products'].notna().any():
+                # Extract product sales from filtered data
+                product_sales_dict = {}
+                product_count_dict = {}
+                product_amounts_dict = {}
+                
+                for idx, row in filtered_sales.iterrows():
+                    products = row['Products']
+                    sale_amount = row['Net_Sales']
+                    
+                    if pd.notna(products) and isinstance(products, str):
+                        # Split by comma and process each product
+                        items = [i.strip() for i in products.split(',') if i.strip()]
+                        num_items = len([i for i in items if 'x' in i and not i.startswith('-')])
+                        
+                        for item in items:
+                            item = item.strip()
+                            # Skip refunds (negative items)
+                            if item.startswith('-') or 'x-' in item:
                                 continue
-            # Create DataFrame from calculated data
-            if product_sales_dict:
-                product_data = []
-                for product, total_sales in product_sales_dict.items():
-                    count = product_count_dict.get(product, 0)
-                    avg_sale = total_sales / count if count > 0 else 0
-                    product_data.append({
-                        'Product': product,
-                        'Total_Sales': total_sales,
-                        'Count': count,
-                        'Avg_Sale': avg_sale
-                    })
-                product_df_filtered = pd.DataFrame(product_data)
-                product_df_filtered = product_df_filtered[product_df_filtered['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
+                                
+                            if 'x' in item:
+                                try:
+                                    # Format: "Product Name 1x135.00" or "Product Name 1x£135.00"
+                                    # Pattern: [Product Name] [quantity]x[price]
+                                    # Use regex to match: text, optional space, number, 'x', price
+                                    pattern = r'^(.+?)\s+(\d+)x([\d.,£]+)$'
+                                    match = re.match(pattern, item)
+                                    
+                                    if match:
+                                        product_name = match.group(1).strip()
+                                        quantity = int(match.group(2))
+                                        price_str = match.group(3).strip()
+                                        
+                                        # Clean and parse price
+                                        price_clean = price_str.replace('£', '').replace(',', '').strip()
+                                        price_match = re.search(r'(\d+\.?\d*)', price_clean)
+                                        if price_match:
+                                            price = float(price_match.group(1))
+                                            # Sanity check: reasonable price range
+                                            if price <= 0 or price > 50000:  # Max £50k per item
+                                                continue
+                                        else:
+                                            continue
+                                        
+                                        if product_name and len(product_name) > 0:
+                                            # Price is already the total for this line item
+                                            if product_name not in product_sales_dict:
+                                                product_sales_dict[product_name] = 0
+                                                product_count_dict[product_name] = 0
+                                            
+                                            product_sales_dict[product_name] += price
+                                            product_count_dict[product_name] += quantity
+                                    else:
+                                        # Fallback: try simpler pattern or skip
+                                        # If we can't parse, skip this item to avoid incorrect data
+                                        continue
+                                        
+                                except Exception as e:
+                                    # Skip items that fail to parse
+                                    continue
+                
+                # Create DataFrame from calculated data
+                if product_sales_dict:
+                    product_data = []
+                    for product, total_sales in product_sales_dict.items():
+                        count = product_count_dict.get(product, 0)
+                        avg_sale = total_sales / count if count > 0 else 0
+                        product_data.append({
+                            'Product': product,
+                            'Total_Sales': total_sales,
+                            'Count': count,
+                            'Avg_Sale': avg_sale
+                        })
+                    
+                    product_df_filtered = pd.DataFrame(product_data)
+                    product_df_filtered = product_df_filtered[product_df_filtered['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Top Products by Sales - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Sales Volume'
+                        st.subheader("Top Products by Sales Volume")
+                        top_products = product_df_filtered.head(20)
+                        if len(top_products) > 0:
+                            fig = px.bar(
+                                top_products,
+                                x='Total_Sales',
+                                y='Product',
+                                orientation='h',
+                                labels={'Total_Sales': 'Total Sales (£)'},
+                                color='Total_Sales',
+                                color_continuous_scale='Blues',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                            render_chart(fig)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    with col2:
+                        title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
+                        st.subheader("Top Products by Transaction Count")
+                        top_count = product_df_filtered.nlargest(20, 'Count')
+                        if len(top_count) > 0:
+                            fig = px.bar(
+                                top_count,
+                                x='Count',
+                                y='Product',
+                                orientation='h',
+                                labels={'Count': 'Number of Transactions'},
+                                color='Count',
+                                color_continuous_scale='Greens',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                            render_chart(fig)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
+                        st.subheader("Top Products by Average Sale Value")
+                        top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
+                        if len(top_avg) > 0:
+                            fig = px.bar(
+                                top_avg,
+                                x='Avg_Sale',
+                                y='Product',
+                                orientation='h',
+                                labels={'Avg_Sale': 'Average Sale (£)'},
+                                color='Avg_Sale',
+                                color_continuous_scale='Oranges',
+                                title=title
+                            )
+                            fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
+                            render_chart(fig)
+                        else:
+                            st.info("No product data available for the selected filters.")
+                    
+                    with col2:
+                        st.subheader("Product Performance Summary")
+                        display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                        display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
+                        display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
+                        display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
+                        st.dataframe(display_df, use_container_width=True, height=600)
+                else:
+                    st.info("No product data available in the filtered data.")
+            else:
+                st.info("Product data not available in the sales data.")
+        else:
+            # Use pre-aggregated data when viewing all employees
+            if product_df is not None:
                 col1, col2 = st.columns(2)
+                
                 with col1:
-                    title = f'Top Products by Sales - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Sales Volume'
-                    st.subheader("Top Products by Sales Volume")
-                    top_products = product_df_filtered.head(20)
-                    if len(top_products) > 0:
-                        fig = px.bar(
-                            top_products,
-                            x='Total_Sales',
-                            y='Product',
-                            orientation='h',
-                            labels={'Total_Sales': 'Total Sales (£)'},
-                            color='Total_Sales',
-                            color_continuous_scale='Blues',
-                            title=title
-                        )
-                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
-                    else:
-                        st.info("No product data available for the selected filters.")
+                    st.subheader("Top 20 Products by Sales Volume")
+                    top_products = product_df.nlargest(20, 'Total_Sales')
+                    fig = px.bar(
+                        top_products,
+                        x='Total_Sales',
+                        y='Product',
+                        orientation='h',
+                        labels={'Total_Sales': 'Total Sales (£)'},
+                        color='Total_Sales',
+                        color_continuous_scale='Blues'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    render_chart(fig)
+                
                 with col2:
-                    title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
-                    st.subheader("Top Products by Transaction Count")
-                    top_count = product_df_filtered.nlargest(20, 'Count')
-                    if len(top_count) > 0:
-                        fig = px.bar(
-                            top_count,
-                            x='Count',
-                            y='Product',
-                            orientation='h',
-                            labels={'Count': 'Number of Transactions'},
-                            color='Count',
-                            color_continuous_scale='Greens',
-                            title=title
-                        )
-                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
-                    else:
-                        st.info("No product data available for the selected filters.")
+                    st.subheader("Top 20 Products by Transaction Count")
+                    top_count = product_df.nlargest(20, 'Count')
+                    fig = px.bar(
+                        top_count,
+                        x='Count',
+                        y='Product',
+                        orientation='h',
+                        labels={'Count': 'Number of Transactions'},
+                        color='Count',
+                        color_continuous_scale='Greens'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    render_chart(fig)
+                
                 col1, col2 = st.columns(2)
+                
                 with col1:
-                    title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
                     st.subheader("Top Products by Average Sale Value")
-                    top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
-                    if len(top_avg) > 0:
-                        fig = px.bar(
-                            top_avg,
-                            x='Avg_Sale',
-                            y='Product',
-                            orientation='h',
-                            labels={'Avg_Sale': 'Average Sale (£)'},
-                            color='Avg_Sale',
-                            color_continuous_scale='Oranges',
-                            title=title
-                        )
-                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
-                    else:
-                        st.info("No product data available for the selected filters.")
+                    top_avg = product_df[product_df['Count'] >= 5].nlargest(20, 'Avg_Sale')
+                    fig = px.bar(
+                        top_avg,
+                        x='Avg_Sale',
+                        y='Product',
+                        orientation='h',
+                        labels={'Avg_Sale': 'Average Sale (£)'},
+                        color='Avg_Sale',
+                        color_continuous_scale='Oranges'
+                    )
+                    fig.update_layout(height=600, showlegend=False)
+                    render_chart(fig)
+                
                 with col2:
                     st.subheader("Product Performance Summary")
-                    display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                    display_df = product_df.nlargest(30, 'Total_Sales')[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
                     display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
                     display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
                     display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
-                    st.dataframe(display_df, use_container_width=True, height=600)
-            else:
-                st.info("No product data available in the filtered data.")
-        else:
-            st.info("Product data not available in the sales data.")
+                    st.dataframe(display_df, use_container_width=True, hide_index=True, height=600)
     
     # TAB 7: Future Projections
     with tab7:
@@ -2387,7 +2849,7 @@ def main():
                 height=500,
                 hovermode='x unified'
             )
-            render_chart(fig, dark_mode)
+            render_chart(fig)
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -2459,7 +2921,7 @@ def main():
                 height=500,
                 hovermode='x unified'
             )
-            render_chart(fig, dark_mode)
+            render_chart(fig)
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -2506,55 +2968,18 @@ def main():
         else:
             st.info("📊 **Insufficient data for monthly forecast.** Need at least 3 months of sales data. Try a wider date range.")
 
-    # TAB 8: Best Team for Week
+    # TAB 8: Best Team
     with tab8:
-        st.header("🏆 Best Team for Week")
-        st.caption("Recommended team based on daily and hourly performance. Uses only active employees.")
-        active_only = work_df[work_df['Employee'].isin(active_employees)] if active_employees else work_df
-        if len(active_only) == 0:
-            st.warning("No active employees. Mark employees as active in the Employee Status tab.")
+        best_team_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
+        if start_date is not None and end_date is not None and work_df['Date'].notna().any():
+            best_team_df = work_df[(work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)].copy()
         else:
-            team_size = st.slider("Team size per day", min_value=1, max_value=10, value=3, help="Number of top performers to recommend per day")
-            lookback_days = st.number_input("Lookback period (days)", min_value=7, max_value=365, value=90, help="Use data from last N days for performance scoring")
-            if work_df['Date'].notna().any():
-                max_date = pd.Timestamp(work_df['Date'].max())
-                cutoff_date = max_date - timedelta(days=lookback_days)
-                score_df = active_only[pd.to_datetime(active_only['Date'], errors='coerce') >= cutoff_date].copy()
-            else:
-                score_df = active_only.copy()
-            if len(score_df) == 0:
-                st.warning("No data in the lookback period. Try a longer lookback or check date range.")
-            else:
-                if 'Day of the Week' not in score_df.columns or score_df['Day of the Week'].isna().all():
-                    score_df = score_df.copy()
-                    score_df['Day of the Week'] = pd.to_datetime(score_df['Date'], errors='coerce').dt.day_name()
-                day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                by_day = score_df.groupby(['Employee', 'Day of the Week'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
-                by_day = by_day.rename(columns={'Day of the Week': 'Day', 'sum': 'Total', 'mean': 'Avg', 'count': 'Count'})
-                recommendations = []
-                for day in day_order:
-                    day_data = by_day[by_day['Day'] == day]
-                    if len(day_data) == 0:
-                        recommendations.append({'Day': day, 'Recommended': '-', 'Est_Total': 0})
-                        continue
-                    top = day_data.nlargest(team_size, 'Total')
-                    names = ', '.join(top['Employee'].tolist())
-                    est_total = top['Total'].sum()
-                    recommendations.append({'Day': day, 'Recommended': names, 'Est_Total': est_total})
-                rec_df = pd.DataFrame(recommendations)
-                st.subheader("📊 Recommended team by day")
-                st.dataframe(rec_df, use_container_width=True, hide_index=True, column_config={
-                    'Day': st.column_config.TextColumn('Day'),
-                    'Recommended': st.column_config.TextColumn('Top performers'),
-                    'Est_Total': st.column_config.NumberColumn('Est. total sales (£)', format='£%.2f'),
-                })
-                if 'Hour' in score_df.columns and score_df['Hour'].notna().any():
-                    st.subheader("⏰ Peak hours by employee")
-                    by_hour = score_df.groupby(['Employee', 'Hour'])['Net_Sales'].sum().reset_index()
-                    emp_best_hour = by_hour.loc[by_hour.groupby('Employee')['Net_Sales'].idxmax()]
-                    emp_best_hour = emp_best_hour[['Employee', 'Hour']].sort_values('Employee')
-                    st.dataframe(emp_best_hour, use_container_width=True, hide_index=True)
-                st.info("💡 Recommendations are based on historical sales. Consider availability and preferences when scheduling.")
+            best_team_df = work_df.copy()
+        active_only = best_team_df[best_team_df[best_team_emp_col].isin(active_employees)] if active_employees else best_team_df
+        if len(active_only) == 0:
+            st.warning("No active employees in the selected date range. Mark employees as active in the Employee Status tab or widen the date range.")
+        else:
+            _render_best_team_tab(work_df, start_date, end_date, active_employees)
 
     # TAB 9: Trends & Seasonality
     with tab9:
@@ -2575,13 +3000,13 @@ def main():
                 with col1:
                     fig = px.bar(monthly, x='Month', y='Net_Sales', labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Sales')
                     fig.update_layout(height=350)
-                    render_chart(fig, dark_mode)
+                    render_chart(fig)
                 with col2:
                     if monthly['MoM_Change'].notna().any():
                         fig = px.line(monthly, x='Month', y='MoM_Change', markers=True, labels={'MoM_Change': 'MoM % Change'}, title='Month-over-Month % Change')
                         fig.add_hline(y=0, line_dash="dash", line_color="gray")
                         fig.update_layout(height=350)
-                        render_chart(fig, dark_mode)
+                        render_chart(fig)
                 st.dataframe(monthly[['Month', 'Net_Sales', 'Transactions', 'Avg_Sale', 'MoM_Change', 'YoY_Change']].round(2), use_container_width=True, hide_index=True)
             with st.expander("📉 Sales Velocity & Best/Worst Periods", expanded=True):
                 daily = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
@@ -2603,7 +3028,7 @@ def main():
                         st.write(f"**Worst Week:** {worst_week} — £{weekly.min():,.2f}")
                 fig = px.histogram(daily, x='Net_Sales', nbins=30, labels={'Net_Sales': 'Daily Sales (£)'}, title='Distribution of Daily Sales')
                 fig.update_layout(height=300)
-                render_chart(fig, dark_mode)
+                render_chart(fig)
             with st.expander("📅 Seasonality", expanded=False):
                 seas_df = filtered_sales.copy()
                 if 'Day of the Week' not in seas_df.columns or seas_df['Day of the Week'].isna().all():
@@ -2613,7 +3038,7 @@ def main():
                 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
                 fig = px.bar(monthly_by_dow, x='Month', y='Net_Sales', color='Day of the Week', labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Sales by Day of Week', color_discrete_sequence=CHART_COLORWAY)
                 fig.update_layout(height=400, barmode='stack')
-                render_chart(fig, dark_mode)
+                render_chart(fig)
 
     # TAB 10: Shop Comparison
     with tab10:
@@ -2649,11 +3074,11 @@ def main():
                 with col1:
                     fig = px.bar(sm, x='Shop', y='Net Sales', color='Shop', labels={'Net Sales': 'Net Sales (£)'}, title='Total Sales by Shop')
                     fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
-                    render_chart(fig, dark_mode)
+                    render_chart(fig)
                 with col2:
                     fig = px.bar(sm, x='Shop', y='Avg Sale', color='Shop', labels={'Avg Sale': 'Avg Transaction (£)'}, title='Average Transaction by Shop')
                     fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
-                    render_chart(fig, dark_mode)
+                    render_chart(fig)
                 st.dataframe(sm, use_container_width=True, hide_index=True, column_config={
                     'Net Sales': st.column_config.NumberColumn('Net Sales (£)', format='£%.2f'),
                     'Avg Sale': st.column_config.NumberColumn('Avg Sale (£)', format='£%.2f'),
@@ -2663,7 +3088,7 @@ def main():
                 monthly_by_shop['Month'] = monthly_by_shop['Date'].astype(str)
                 fig = px.line(monthly_by_shop, x='Month', y='Net_Sales', color='Shop', markers=True, labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Trend by Shop')
                 fig.update_layout(height=400)
-                render_chart(fig, dark_mode)
+                render_chart(fig)
 
     # TAB 11: Transaction Analytics
     with tab11:
@@ -2683,14 +3108,14 @@ def main():
                         nbins = min(20, max(1, int(items.max()) + 1))
                         fig = px.histogram(tx_df, x='Items_Count', nbins=nbins, labels={'Items_Count': 'Items per Transaction'}, title='Basket Size Distribution')
                         fig.update_layout(height=350)
-                        render_chart(fig, dark_mode)
+                        render_chart(fig)
                     with col2:
                         basket_emp_col = 'Commission_Employee' if 'Commission_Employee' in tx_df.columns else 'Employee'
                         by_emp = tx_df.groupby(basket_emp_col)['Items_Count'].mean().reset_index().rename(columns={basket_emp_col: 'Employee'}).sort_values('Items_Count', ascending=False).head(15)
                         if len(by_emp) > 0:
                             fig = px.bar(by_emp, x='Items_Count', y='Employee', orientation='h', labels={'Items_Count': 'Avg Items'}, title='Avg Basket Size by Employee (by commission)')
                             fig.update_layout(height=350, xaxis_tickformat=".2f")
-                            render_chart(fig, dark_mode)
+                            render_chart(fig)
                 else:
                     st.info("Products column not found. Basket size requires product data.")
             with st.expander("💰 Transaction Size Distribution", expanded=True):
@@ -2701,7 +3126,7 @@ def main():
                 tx_dist = tx_dist_df.groupby('Tx_Bucket', observed=True).size().reset_index(name='Count')
                 fig = px.bar(tx_dist, x='Tx_Bucket', y='Count', labels={'Tx_Bucket': 'Transaction Size', 'Count': 'Count'}, title='Transaction Value Distribution')
                 fig.update_layout(height=350)
-                render_chart(fig, dark_mode)
+                render_chart(fig)
             with st.expander("↩️ Refund Patterns", expanded=True):
                 if 'Refunds' in filtered_sales.columns:
                     refunds = filtered_sales[filtered_sales['Refunds'] != 0]
@@ -2715,13 +3140,13 @@ def main():
                             refund_by_emp = refund_by_emp.sort_values('Refund_Sum', ascending=False).head(15)
                             fig = px.bar(refund_by_emp, x='Refund_Sum', y='Employee', orientation='h', labels={'Refund_Sum': 'Refunds (£)'}, title='Refunds by Employee (by commission)')
                             fig.update_layout(height=350, xaxis_tickformat=".2f")
-                            render_chart(fig, dark_mode)
+                            render_chart(fig)
                         with col2:
                             if 'Hour' in refunds.columns and refunds['Hour'].notna().any():
                                 refund_by_hour = refunds.groupby('Hour')['Refunds'].sum().abs().reset_index()
                                 fig = px.bar(refund_by_hour, x='Hour', y='Refunds', labels={'Refunds': 'Refunds (£)'}, title='Refunds by Hour of Day')
                                 fig.update_layout(height=350, yaxis_tickformat=".2f")
-                                render_chart(fig, dark_mode)
+                                render_chart(fig)
                         if 'Products' in refunds.columns:
                             st.subheader("Refunds by Product")
                             refund_products = {}
@@ -2746,14 +3171,13 @@ def main():
             st.warning("No data for the selected filters.")
         else:
             with st.expander("🛍️ Product Mix & Share", expanded=True):
-                insights_product_df = _compute_product_from_sales(filtered_sales)
-                if insights_product_df is not None and len(insights_product_df) > 0:
-                    top = insights_product_df.head(15)
+                if product_df is not None and len(product_df) > 0:
+                    top = product_df.head(15)
                     top['Share_%'] = top['Total_Sales'] / top['Total_Sales'].sum() * 100
                     fig = px.pie(top, values='Share_%', names='Product', title='Product Mix (Top 15)', color_discrete_sequence=CHART_COLORWAY)
                     fig.update_layout(height=400)
                     fig.update_traces(textinfo='percent+label', texttemplate='%{percent:.2%}')
-                    render_chart(fig, dark_mode)
+                    render_chart(fig)
                 else:
                     st.info("No product data available.")
             with st.expander("👤 Product-Employee Affinity", expanded=True):
@@ -2781,15 +3205,17 @@ def main():
                         top_combos = ep_df.nlargest(20, 'Sales')
                         fig = px.bar(top_combos, x='Sales', y='Product', color='Employee', orientation='h', labels={'Sales': 'Sales (£)'}, title='Top Product-Employee Combinations')
                         fig.update_layout(height=500, barmode='stack', xaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
+                        render_chart(fig)
                     else:
                         st.info("No product-employee data.")
                 else:
                     st.info("Products and Employee columns required.")
             with st.expander("📊 Employee Consistency", expanded=True):
-                if employee_df is not None and 'Employee' in filtered_sales.columns:
-                    emp_daily = filtered_sales.groupby(['Employee', filtered_sales['Date'].dt.date])['Net_Sales'].sum().reset_index()
-                    emp_std = emp_daily.groupby('Employee')['Net_Sales'].agg(['mean', 'std', 'count']).reset_index()
+                adv_emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
+                if employee_df is not None and adv_emp_col in filtered_sales.columns:
+                    emp_daily = filtered_sales.groupby([adv_emp_col, filtered_sales['Date'].dt.date])['Net_Sales'].sum().reset_index()
+                    emp_std = emp_daily.groupby(adv_emp_col)['Net_Sales'].agg(['mean', 'std', 'count']).reset_index()
+                    emp_std = emp_std.rename(columns={adv_emp_col: 'Employee'})
                     emp_std = emp_std[emp_std['count'] >= 5]
                     emp_std['CV'] = np.where(emp_std['mean'] > 0, emp_std['std'] / emp_std['mean'] * 100, 0)
                     emp_std = emp_std.sort_values('CV')
@@ -2797,18 +3223,10 @@ def main():
                         st.caption("Most consistent = lowest coefficient of variation (CV). Lower CV = more predictable daily performance.")
                         fig = px.bar(emp_std.head(15), x='Employee', y='CV', labels={'CV': 'CV %'}, title='Employee Consistency (Lower = More Consistent)')
                         fig.update_layout(height=350, yaxis_tickformat=".2f")
-                        render_chart(fig, dark_mode)
+                        render_chart(fig)
                         st.dataframe(emp_std[['Employee', 'mean', 'std', 'CV']].round(2), use_container_width=True, hide_index=True)
                 else:
                     st.info("Need employee data.")
-            with st.expander("⏰ Peak Hours by Employee", expanded=True):
-                if 'Hour' in filtered_sales.columns and filtered_sales['Hour'].notna().any() and 'Employee' in filtered_sales.columns:
-                    by_emp_hour = filtered_sales.groupby(['Employee', 'Hour'])['Net_Sales'].sum().reset_index()
-                    emp_best = by_emp_hour.loc[by_emp_hour.groupby('Employee')['Net_Sales'].idxmax()]
-                    emp_best = emp_best[['Employee', 'Hour']].sort_values('Employee')
-                    st.dataframe(emp_best, use_container_width=True, hide_index=True, column_config={'Hour': st.column_config.NumberColumn('Peak Hour', format='%d:00')})
-                else:
-                    st.info("Hour and Employee columns required.")
             with st.expander("⚠️ Anomaly Detection", expanded=True):
                 daily = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
                 if len(daily) >= 7:
@@ -2821,7 +3239,7 @@ def main():
                             st.caption("Days with Z-score > 2 (unusually high or low sales).")
                             fig = px.scatter(daily, x='Date', y='Net_Sales', color='Z_Score', color_continuous_scale='RdBu_r', labels={'Net_Sales': 'Net Sales (£)'}, title='Daily Sales with Anomalies Highlighted')
                             fig.update_layout(height=350)
-                            render_chart(fig, dark_mode)
+                            render_chart(fig)
                             st.dataframe(anomalies[['Date', 'Net_Sales', 'Z_Score']].round(2), use_container_width=True, hide_index=True)
                         else:
                             st.info("No significant anomalies detected (Z-score > 2).")
