@@ -1571,10 +1571,18 @@ def main():
         if emp_col in filtered_sales.columns:
             filtered_sales = filtered_sales[filtered_sales[emp_col].isin(active_employees)].copy()
     
-    # Employee_df for "All" view: filter to active only when inactive are excluded
-    employee_df_display = employee_df
-    if employee_df is not None and selected_employee == 'All' and not show_inactive_in_filter and active_employees:
-        employee_df_display = employee_df[employee_df['Employee'].isin(active_employees)].copy()
+    # Tab 4 leaderboard / export: same calendar range as the dashboard, and same inactive rule as the rest of the app
+    perf_base = work_df
+    if start_date is not None and end_date is not None and work_df['Date'].notna().any():
+        perf_base = work_df[
+            (work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)
+        ].copy()
+    perf_emp_col = 'Commission_Employee' if 'Commission_Employee' in perf_base.columns else 'Employee'
+    if not show_inactive_in_filter and active_employees and perf_emp_col in perf_base.columns:
+        perf_base = perf_base[perf_base[perf_emp_col].isin(active_employees)].copy()
+    employee_df_display = (
+        _compute_employee_performance_from_sales(perf_base) if len(perf_base) > 0 else None
+    )
     
     # Employee-specific context banner (styled, not st.info)
     if selected_employee != 'All':
