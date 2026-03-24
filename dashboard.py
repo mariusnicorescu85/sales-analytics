@@ -2316,8 +2316,8 @@ def main():
                     'Avg net / that weekday',
                     'Avg gross / that weekday',
                     'Transactions',
-                    'Avg ticket (net)',
-                    'Std dev (ticket)',
+                    'Average £ per sale',
+                    'Variation in sale amounts',
                 ]
                 st.dataframe(display_df, width="stretch", hide_index=True)
             else:
