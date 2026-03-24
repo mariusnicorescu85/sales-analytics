@@ -538,34 +538,110 @@ def _compute_hourly_from_sales(sales_df):
     return agg.sort_values('Hour')
 
 
+def _parse_positive_product_lines(products):
+    """
+    Parse Products field into (name, qty, unit_price) for positive lines.
+    unit_price is the number in Qty x PRICE; line list weight = qty * unit_price.
+    """
+    if pd.isna(products) or not isinstance(products, str) or not str(products).strip():
+        return []
+    lines = []
+    for item in [i.strip() for i in products.split(',') if i.strip()]:
+        if item.startswith('-') or 'x-' in item:
+            continue
+        if 'x' not in item:
+            continue
+        m = re.match(r'^(.+?)\s+(\d+)x([\d.,£]+)$', item)
+        if not m:
+            continue
+        name, qty, price_str = m.group(1).strip(), int(m.group(2)), m.group(3)
+        price_match = re.search(r'(\d+\.?\d*)', price_str.replace('£', '').replace(',', ''))
+        if not price_match:
+            continue
+        price = float(price_match.group(1))
+        if name and 0 < price <= 50000:
+            lines.append((name, qty, price))
+    return lines
+
+
+def _row_transaction_weight(row):
+    w = row.get('Transaction_Weight')
+    if w is None or pd.isna(w):
+        return 1.0
+    try:
+        x = float(w)
+        return x if x >= 0 else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _product_transaction_key(row):
+    """Stable key for one till sale (dedupes commission-expanded rows)."""
+    t = row.get('Transaction')
+    if t is not None and not pd.isna(t) and str(t).strip() not in ('', 'nan', 'None'):
+        return ('txn', str(t).strip())
+    ts = row.get('Date')
+    ps = row.get('Products')
+    return ('fp', ts, ps)
+
+
 def _compute_product_from_sales(sales_df):
-    """Compute product patterns from sales transaction data (parses Products column)."""
+    """Compute product patterns from sales transaction data (parses Products column).
+
+    Splits each row's Net_Sales across parsed lines by (qty × list unit price) share so
+    commission-expanded rows (same Products, fractional Net_Sales) do not duplicate grosses.
+
+    **Distinct_Tx** = number of unique till sales (``Transaction`` when present, else Date+Products)
+    that include the SKU with a positive list-weight share.
+
+    **Weighted_Tx** = sum of Transaction_Weight × line share (fractional when commission is split).
+    """
     if sales_df is None or len(sales_df) == 0 or 'Products' not in sales_df.columns:
         return None
     product_sales = {}
-    product_count = {}
+    product_weighted = {}
+    product_txn_keys = {}
     for _, row in sales_df.iterrows():
-        products = row.get('Products')
-        if pd.notna(products) and isinstance(products, str):
-            for item in [i.strip() for i in products.split(',') if i.strip()]:
-                if item.startswith('-') or 'x-' in item:
-                    continue
-                if 'x' in item:
-                    m = re.match(r'^(.+?)\s+(\d+)x([\d.,£]+)$', item)
-                    if m:
-                        name, qty, price_str = m.group(1).strip(), int(m.group(2)), m.group(3)
-                        price_match = re.search(r'(\d+\.?\d*)', price_str.replace('£', '').replace(',', ''))
-                        if not price_match:
-                            continue
-                        price = float(price_match.group(1))
-                        if 0 < price <= 50000 and name:
-                            product_sales[name] = product_sales.get(name, 0) + price
-                            product_count[name] = product_count.get(name, 0) + qty
+        lines = _parse_positive_product_lines(row.get('Products'))
+        if not lines:
+            continue
+        weighted = []
+        for name, qty, unit_p in lines:
+            lw = float(qty) * unit_p
+            if lw > 0:
+                weighted.append((name, lw))
+        if not weighted:
+            continue
+        S = sum(lw for _, lw in weighted)
+        if S <= 0:
+            continue
+        try:
+            net = float(row.get('Net_Sales', 0) or 0)
+        except (TypeError, ValueError):
+            net = 0.0
+        w = _row_transaction_weight(row)
+        tx_key = _product_transaction_key(row)
+        for name, lw in weighted:
+            share = lw / S
+            product_sales[name] = product_sales.get(name, 0) + net * share
+            product_weighted[name] = product_weighted.get(name, 0) + w * share
+            if share > 0:
+                if name not in product_txn_keys:
+                    product_txn_keys[name] = set()
+                product_txn_keys[name].add(tx_key)
     if not product_sales:
         return None
-    rows = [{'Product': p, 'Total_Sales': product_sales[p], 'Count': product_count.get(p, 0),
-             'Avg_Sale': product_sales[p] / product_count.get(p, 1) if product_count.get(p, 0) else 0}
-            for p in product_sales]
+    rows = []
+    for p in product_sales:
+        n_distinct = len(product_txn_keys.get(p, ()))
+        wsum = product_weighted.get(p, 0)
+        rows.append({
+            'Product': p,
+            'Total_Sales': product_sales[p],
+            'Distinct_Tx': n_distinct,
+            'Weighted_Tx': wsum,
+            'Avg_Sale': (product_sales[p] / n_distinct) if n_distinct > 0 else 0.0,
+        })
     df = pd.DataFrame(rows)
     df = df[df['Total_Sales'] > 0].sort_values('Total_Sales', ascending=False)
     return df.reset_index(drop=True)
@@ -585,6 +661,28 @@ def _calendar_weekday_counts(start_date, end_date):
         out[day_order[d.weekday()]] += 1
         d += timedelta(days=1)
     return out
+
+
+def _filter_sales_by_calendar_range(sales_df, start_date, end_date):
+    """
+    Rows whose transaction Date falls on start_date..end_date inclusive (calendar days).
+
+    Uses UTC-normalized YYYY-MM-DD strings so timezone-aware datetimes (e.g. Supabase +00)
+    still match sidebar picks. If start_date or end_date is None, returns sales_df.copy().
+    """
+    if sales_df is None or len(sales_df) == 0:
+        return sales_df
+    out = sales_df.copy()
+    if start_date is None or end_date is None:
+        return out
+    if 'Date' not in out.columns:
+        return out
+    ts = pd.to_datetime(out['Date'], errors='coerce', utc=True)
+    ymd = ts.dt.strftime('%Y-%m-%d')
+    lo = start_date.isoformat() if hasattr(start_date, 'isoformat') else str(start_date)
+    hi = end_date.isoformat() if hasattr(end_date, 'isoformat') else str(end_date)
+    mask = ts.notna() & (ymd >= lo) & (ymd <= hi)
+    return out.loc[mask].copy()
 
 
 def _parse_commission_recipients(comm_str):
@@ -1201,8 +1299,8 @@ def _render_best_team_tab(work_df, start_date, end_date, active_employees):
     date_range_note = f"📅 Using: {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if (start_date and end_date) else "📅 Using: All dates"
     st.caption(f"Performance profiles, peak times, and scheduling guidance for active employees. {date_range_note}")
     best_team_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
-    if start_date is not None and end_date is not None and work_df['Date'].notna().any():
-        best_team_df = work_df[(work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)].copy()
+    if start_date is not None and end_date is not None:
+        best_team_df = _filter_sales_by_calendar_range(work_df, start_date, end_date)
     else:
         best_team_df = work_df.copy()
     active_only = best_team_df[best_team_df[best_team_emp_col].isin(active_employees)] if active_employees else best_team_df
@@ -1475,15 +1573,12 @@ def main():
             start_date = min_date
             end_date = max_date
         
-        filtered_sales = work_df[
-            (work_df['Date'].dt.date >= start_date) & 
-            (work_df['Date'].dt.date <= end_date)
-        ]
+        filtered_sales = _filter_sales_by_calendar_range(work_df, start_date, end_date)
         
         # Display selected range
         st.sidebar.caption(f"📆 {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}")
     else:
-        filtered_sales = work_df
+        filtered_sales = work_df.copy()
         # Set default dates if no date data
         start_date = None
         end_date = None
@@ -1541,10 +1636,7 @@ def main():
                 # Check what we have before employee filtering
                 check_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
                 if start_date is not None and end_date is not None:
-                    date_filtered = work_df[
-                        (work_df['Date'].dt.date >= start_date) & 
-                        (work_df['Date'].dt.date <= end_date)
-                    ]
+                    date_filtered = _filter_sales_by_calendar_range(work_df, start_date, end_date)
                     before_filter_count = len(date_filtered)
                     employees_in_range = date_filtered[check_col].dropna().unique() if check_col in date_filtered.columns else []
                 else:
@@ -1570,13 +1662,16 @@ def main():
         emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
         if emp_col in filtered_sales.columns:
             filtered_sales = filtered_sales[filtered_sales[emp_col].isin(active_employees)].copy()
+
+    # Enforce sidebar calendar range again after employee / active filters (robust to tz-aware Date)
+    filtered_sales = _filter_sales_by_calendar_range(filtered_sales, start_date, end_date)
     
     # Tab 4 leaderboard / export: same calendar range as the dashboard, and same inactive rule as the rest of the app
-    perf_base = work_df
-    if start_date is not None and end_date is not None and work_df['Date'].notna().any():
-        perf_base = work_df[
-            (work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)
-        ].copy()
+    perf_base = (
+        _filter_sales_by_calendar_range(work_df, start_date, end_date)
+        if start_date is not None and end_date is not None
+        else work_df.copy()
+    )
     perf_emp_col = 'Commission_Employee' if 'Commission_Employee' in perf_base.columns else 'Employee'
     if not show_inactive_in_filter and active_employees and perf_emp_col in perf_base.columns:
         perf_base = perf_base[perf_base[perf_emp_col].isin(active_employees)].copy()
@@ -1724,10 +1819,7 @@ def main():
             years_back = current_year - year
             py_start = _shift_date_to_year(start_date, years_back)
             py_end = _shift_date_to_year(end_date, years_back)
-            py_sales = work_df[
-                (work_df['Date'].dt.date >= py_start) &
-                (work_df['Date'].dt.date <= py_end)
-            ].copy()
+            py_sales = _filter_sales_by_calendar_range(work_df, py_start, py_end)
             if selected_employee != 'All' and emp_col_comp in py_sales.columns:
                 py_sales = py_sales[py_sales[emp_col_comp].astype(str).str.strip() == selected_employee.strip()]
             if selected_employee == 'All' and not show_inactive_in_filter and active_employees and emp_col_comp in py_sales.columns:
@@ -1810,10 +1902,11 @@ def main():
     # Calculate comparison metrics if employee is selected
     if selected_employee != 'All' and len(work_df) > len(filtered_sales) and start_date and end_date:
         # Get all data for comparison (same date range, all employees)
-        comparison_sales = work_df[
-            (work_df['Date'].dt.date >= start_date) &
-            (work_df['Date'].dt.date <= end_date)
-        ] if work_df['Date'].notna().any() else work_df
+        comparison_sales = (
+            _filter_sales_by_calendar_range(work_df, start_date, end_date)
+            if (start_date and end_date)
+            else work_df.copy()
+        )
         
         comp_tx = comparison_sales['Transaction_Weight'].sum() if 'Transaction_Weight' in comparison_sales.columns else len(comparison_sales)
         all_avg_transaction = comparison_sales['Net_Sales'].sum() / comp_tx if comp_tx > 0 else 0
@@ -2029,13 +2122,13 @@ def main():
         if len(filtered_sales) == 0:
             st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
         else:
-            # Make a copy to work with
-            work_df = filtered_sales.copy()
+            # Local frame only — do not assign to work_df (would shadow full shop data for later tabs)
+            dow_df = filtered_sales.copy()
 
             # Ensure Day of Week column exists - calculate from Date if needed
-            if 'Day of the Week' not in work_df.columns or work_df['Day of the Week'].isna().all():
-                if 'Date' in work_df.columns and work_df['Date'].notna().any():
-                    work_df['Day of the Week'] = work_df['Date'].dt.day_name()
+            if 'Day of the Week' not in dow_df.columns or dow_df['Day of the Week'].isna().all():
+                if 'Date' in dow_df.columns and dow_df['Date'].notna().any():
+                    dow_df['Day of the Week'] = dow_df['Date'].dt.day_name()
                 else:
                     st.error("No date data available to calculate day of week.")
                     st.stop()
@@ -2043,7 +2136,7 @@ def main():
             day_col = 'Day of the Week'
 
             # Filter out rows with null day of week
-            valid_sales = work_df[work_df[day_col].notna()].copy()
+            valid_sales = dow_df[dow_df[day_col].notna()].copy()
 
             if len(valid_sales) > 0:
                 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -2228,7 +2321,7 @@ def main():
                 ]
                 st.dataframe(display_df, width="stretch", hide_index=True)
             else:
-                st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
+                st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(dow_df)} total rows but none with valid day of week.")
     
     # TAB 3: Employee Status
     with tab3:
@@ -2262,10 +2355,11 @@ def main():
                     st.metric("Days Active", f"{days_active}")
                 
                 # Comparison with all employees (same date range)
-                comparison_sales = work_df[
-                    (work_df['Date'].dt.date >= start_date) & 
-                    (work_df['Date'].dt.date <= end_date)
-                ] if work_df['Date'].notna().any() else work_df
+                comparison_sales = (
+                    _filter_sales_by_calendar_range(work_df, start_date, end_date)
+                    if (start_date and end_date)
+                    else work_df.copy()
+                )
                 
                 if len(comparison_sales) > len(filtered_sales):
                     st.subheader("📈 Performance Comparison")
@@ -2516,12 +2610,34 @@ def main():
         else:
             st.header("🛍️ Product Patterns Analysis")
 
-        # Always derive from filtered_sales (date range, shop, employee, active/inactive)
-        if 'Products' not in filtered_sales.columns:
+        if start_date is not None and end_date is not None:
+            st.caption(f"Product totals use transactions from **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}** (same as sidebar).")
+        else:
+            st.caption("Product totals use **all available dates** (no date column or range).")
+        st.caption(
+            "Volume bars: **each product’s share of row Net_Sales** (qty × list unit price weights). "
+            "**Transaction count** chart = **distinct till sales** (same sale with split commission counts once). "
+            "The table also shows **weighted** slices (commission × line share) for analysts."
+        )
+
+        product_source = _filter_sales_by_calendar_range(filtered_sales, start_date, end_date)
+        _pk = f"p6_{start_date}_{end_date}_{selected_shop}_{selected_employee}"
+
+        if 'Products' not in product_source.columns:
             st.info("Product data not available in the sales data.")
         else:
-            product_df_filtered = _compute_product_from_sales(filtered_sales)
+            product_df_filtered = _compute_product_from_sales(product_source)
             if product_df_filtered is not None and len(product_df_filtered) > 0:
+                net_in_view = float(product_source['Net_Sales'].sum()) if 'Net_Sales' in product_source.columns else 0.0
+                attrib_all = float(product_df_filtered['Total_Sales'].sum())
+                gap = net_in_view - attrib_all
+                if net_in_view != 0:
+                    st.caption(
+                        f"**Sanity check:** Sum of attributed product totals **£{attrib_all:,.2f}** vs **net sales in this view "
+                        f"£{net_in_view:,.2f}** ({100 * attrib_all / net_in_view:.0f}% matched). "
+                        f"Difference **£{gap:,.2f}** is from rows with no parseable priced lines, empty **Products**, or "
+                        f"attribution dropped when a SKU’s net share is negative."
+                    )
                 col1, col2 = st.columns(2)
 
                 with col1:
@@ -2534,33 +2650,33 @@ def main():
                             x='Total_Sales',
                             y='Product',
                             orientation='h',
-                            labels={'Total_Sales': 'Total Sales (£)'},
+                            labels={'Total_Sales': 'Attributed net (£)'},
                             color='Total_Sales',
                             color_continuous_scale='Blues',
                             title=title
                         )
                         fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig)
+                        render_chart(fig, key=f"{_pk}_vol")
                     else:
                         st.info("No product data available for the selected filters.")
 
                 with col2:
                     title = f'Top Products by Count - {selected_employee}' if selected_employee != 'All' else 'Top 20 Products by Transaction Count'
                     st.subheader("Top Products by Transaction Count")
-                    top_count = product_df_filtered.nlargest(20, 'Count')
+                    top_count = product_df_filtered.nlargest(20, 'Distinct_Tx')
                     if len(top_count) > 0:
                         fig = px.bar(
                             top_count,
-                            x='Count',
+                            x='Distinct_Tx',
                             y='Product',
                             orientation='h',
-                            labels={'Count': 'Number of Transactions'},
-                            color='Count',
+                            labels={'Distinct_Tx': 'Distinct sales (#)'},
+                            color='Distinct_Tx',
                             color_continuous_scale='Greens',
                             title=title
                         )
-                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig)
+                        fig.update_layout(height=600, showlegend=False, xaxis_tickformat="d")
+                        render_chart(fig, key=f"{_pk}_cnt")
                     else:
                         st.info("No product data available for the selected filters.")
 
@@ -2569,29 +2685,31 @@ def main():
                 with col1:
                     title = f'Top Products by Avg Sale - {selected_employee}' if selected_employee != 'All' else 'Top Products by Average Sale Value'
                     st.subheader("Top Products by Average Sale Value")
-                    top_avg = product_df_filtered[product_df_filtered['Count'] >= 1].nlargest(20, 'Avg_Sale')
+                    top_avg = product_df_filtered[product_df_filtered['Distinct_Tx'] > 0].nlargest(20, 'Avg_Sale')
                     if len(top_avg) > 0:
                         fig = px.bar(
                             top_avg,
                             x='Avg_Sale',
                             y='Product',
                             orientation='h',
-                            labels={'Avg_Sale': 'Average Sale (£)'},
+                            labels={'Avg_Sale': 'Avg attributed net / distinct sale (£)'},
                             color='Avg_Sale',
                             color_continuous_scale='Oranges',
                             title=title
                         )
                         fig.update_layout(height=600, showlegend=False, xaxis_tickformat=".2f")
-                        render_chart(fig)
+                        render_chart(fig, key=f"{_pk}_avg")
                     else:
                         st.info("No product data available for the selected filters.")
 
                 with col2:
                     st.subheader("Product Performance Summary")
-                    display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Count', 'Avg_Sale']].copy()
+                    display_df = product_df_filtered.head(30)[['Product', 'Total_Sales', 'Distinct_Tx', 'Weighted_Tx', 'Avg_Sale']].copy()
                     display_df['Total_Sales'] = display_df['Total_Sales'].apply(lambda x: f"£{x:,.2f}")
+                    display_df['Distinct_Tx'] = display_df['Distinct_Tx'].apply(lambda x: f"{int(x):,}")
+                    display_df['Weighted_Tx'] = display_df['Weighted_Tx'].apply(lambda x: f"{float(x):.2f}")
                     display_df['Avg_Sale'] = display_df['Avg_Sale'].apply(lambda x: f"£{x:,.2f}")
-                    display_df.columns = ['Product', 'Total Sales', 'Transactions', 'Avg Sale']
+                    display_df.columns = ['Product', 'Total Sales', 'Sales (#)', 'Weighted tx', 'Avg per sale']
                     st.dataframe(display_df, width="stretch", hide_index=True, height=600)
             else:
                 st.info("No product data available in the filtered data.")
@@ -2822,8 +2940,8 @@ def main():
     # TAB 8: Best Team
     with tab8:
         best_team_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
-        if start_date is not None and end_date is not None and work_df['Date'].notna().any():
-            best_team_df = work_df[(work_df['Date'].dt.date >= start_date) & (work_df['Date'].dt.date <= end_date)].copy()
+        if start_date is not None and end_date is not None:
+            best_team_df = _filter_sales_by_calendar_range(work_df, start_date, end_date)
         else:
             best_team_df = work_df.copy()
         active_only = best_team_df[best_team_df[best_team_emp_col].isin(active_employees)] if active_employees else best_team_df
@@ -2897,9 +3015,11 @@ def main():
         if 'Shop' not in sales_df.columns or sales_df['Shop'].nunique() < 2:
             st.info("Shop comparison requires data from multiple shops. Select 'All Shops' in the sidebar to see this analysis.")
         else:
-            compare_df = work_df.copy()
-            if start_date and end_date and compare_df['Date'].notna().any():
-                compare_df = compare_df[(compare_df['Date'].dt.date >= start_date) & (compare_df['Date'].dt.date <= end_date)]
+            compare_df = (
+                _filter_sales_by_calendar_range(work_df, start_date, end_date)
+                if (start_date and end_date)
+                else work_df.copy()
+            )
             if selected_employee != 'All':
                 comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in compare_df.columns else 'Employee'
                 if comp_emp_col in compare_df.columns:
@@ -3021,37 +3141,45 @@ def main():
         if len(filtered_sales) == 0:
             st.warning("No data for the selected filters.")
         else:
+            adv_calendar_sales = _filter_sales_by_calendar_range(filtered_sales, start_date, end_date)
             with st.expander("🛍️ Product Mix & Share", expanded=True):
-                product_mix_df = _compute_product_from_sales(filtered_sales)
+                product_mix_df = _compute_product_from_sales(adv_calendar_sales)
                 if product_mix_df is not None and len(product_mix_df) > 0:
                     top = product_mix_df.head(15)
                     top['Share_%'] = top['Total_Sales'] / top['Total_Sales'].sum() * 100
                     fig = px.pie(top, values='Share_%', names='Product', title='Product Mix (Top 15)', color_discrete_sequence=CHART_COLORWAY)
                     fig.update_layout(height=400)
                     fig.update_traces(textinfo='percent+label', texttemplate='%{percent:.2%}')
-                    render_chart(fig)
+                    render_chart(fig, key=f"mix_{start_date}_{end_date}_{selected_shop}_{selected_employee}")
                 else:
                     st.info("No product data available.")
             with st.expander("👤 Product-Employee Affinity", expanded=True):
                 aff_emp_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
                 if 'Products' in filtered_sales.columns and aff_emp_col in filtered_sales.columns:
                     emp_product_sales = {}
-                    for _, row in filtered_sales.iterrows():
+                    for _, row in adv_calendar_sales.iterrows():
                         emp = row.get(aff_emp_col)
                         ps = row.get('Products', '')
                         if pd.isna(emp) or pd.isna(ps) or not isinstance(ps, str):
                             continue
-                        for item in [i.strip() for i in ps.split(',') if i.strip()]:
-                            if item.startswith('-') or 'x-' in item:
-                                continue
-                            if 'x' in item:
-                                m = re.match(r'^(.+?)\s+(\d+)x([\d.,£]+)$', item)
-                                if m:
-                                    name, qty, price_str = m.group(1).strip(), int(m.group(2)), m.group(3)
-                                    pm = re.search(r'(\d+\.?\d*)', price_str.replace('£', '').replace(',', ''))
-                                    if pm and 0 < float(pm.group(1)) <= 50000:
-                                        key = (emp, name)
-                                        emp_product_sales[key] = emp_product_sales.get(key, 0) + float(pm.group(1)) * qty
+                        lines = _parse_positive_product_lines(ps)
+                        weighted = []
+                        for name, qty, unit_p in lines:
+                            lw = float(qty) * unit_p
+                            if lw > 0:
+                                weighted.append((name, lw))
+                        if not weighted:
+                            continue
+                        S = sum(lw for _, lw in weighted)
+                        if S <= 0:
+                            continue
+                        try:
+                            net = float(row.get('Net_Sales', 0) or 0)
+                        except (TypeError, ValueError):
+                            net = 0.0
+                        for name, lw in weighted:
+                            key = (emp, name)
+                            emp_product_sales[key] = emp_product_sales.get(key, 0) + net * (lw / S)
                     if emp_product_sales:
                         ep_df = pd.DataFrame([{'Employee': k[0], 'Product': k[1], 'Sales': v} for k, v in emp_product_sales.items()])
                         top_combos = ep_df.nlargest(20, 'Sales')
