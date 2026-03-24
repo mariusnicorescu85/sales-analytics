@@ -571,6 +571,22 @@ def _compute_product_from_sales(sales_df):
     return df.reset_index(drop=True)
 
 
+def _calendar_weekday_counts(start_date, end_date):
+    """
+    Count how many times each weekday occurs in [start_date, end_date] inclusive.
+    Returns dict with keys Monday..Sunday. Empty/zero if dates invalid.
+    """
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    out = {d: 0 for d in day_order}
+    if start_date is None or end_date is None or start_date > end_date:
+        return out
+    d = start_date
+    while d <= end_date:
+        out[day_order[d.weekday()]] += 1
+        d += timedelta(days=1)
+    return out
+
+
 def _parse_commission_recipients(comm_str):
     """
     Parse Commission column (format: 'Name1: amt1, Name2: amt2') into list of (name, amount).
@@ -1994,7 +2010,13 @@ def main():
             st.header(f"📆 Day of Week Analysis - {selected_employee}")
         else:
             st.header("📆 Day of Week Analysis")
-        
+
+        st.caption(
+            "Charts use your **filtered transactions**. "
+            "**Weekdays in range** counts how many Mondays, Tuesdays, etc. fall inside the sidebar date range. "
+            "**Avg net (per weekday day)** = total net on that weekday ÷ that count (treats dates with no sales as £0)."
+        )
+
         # Always derive from filtered_sales so date range, shop, and employee filters apply
         if len(filtered_sales) == 0:
             st.warning(f"No data available for {selected_employee if selected_employee != 'All' else 'the selected filters'}.")
@@ -2038,6 +2060,24 @@ def main():
 
                 # Reset index to make Day a column for easier plotting
                 day_sales_plot = day_sales.reset_index()
+
+                wd_counts = _calendar_weekday_counts(start_date, end_date)
+                if sum(wd_counts.values()) == 0 and valid_sales['Date'].notna().any():
+                    wd_counts = _calendar_weekday_counts(
+                        valid_sales['Date'].min().date(),
+                        valid_sales['Date'].max().date(),
+                    )
+                day_sales_plot['Weekdays_In_Range'] = day_sales_plot['Day'].map(wd_counts).fillna(0).astype(int)
+                day_sales_plot['Avg_Net_Per_Weekday'] = np.where(
+                    day_sales_plot['Weekdays_In_Range'] > 0,
+                    day_sales_plot['Net_Sales_Sum'] / day_sales_plot['Weekdays_In_Range'],
+                    0.0,
+                )
+                day_sales_plot['Avg_Gross_Per_Weekday'] = np.where(
+                    day_sales_plot['Weekdays_In_Range'] > 0,
+                    day_sales_plot['Gross_Sales_Sum'] / day_sales_plot['Weekdays_In_Range'],
+                    0.0,
+                )
 
                 col1, col2 = st.columns(2)
 
@@ -2101,15 +2141,84 @@ def main():
                     render_chart(fig)
 
                 with col2:
-                    st.subheader("Day of Week Summary Table")
-                    display_df = day_sales_plot.copy()
-                    display_df['Net_Sales_Sum'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Net_Sales_Mean'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Gross_Sales_Sum'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
-                    display_df['Net_Sales_Std'] = display_df['Net_Sales_Std'].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A")
-                    display_df = display_df[['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std', 'Gross_Sales_Sum']]
-                    display_df.columns = ['Day', 'Total Sales', 'Avg Sale', 'Transactions', 'Std Dev', 'Gross Sales']
-                    st.dataframe(display_df, width="stretch", hide_index=True)
+                    title = (
+                        f'Avg net per calendar day - {selected_employee}'
+                        if selected_employee != 'All'
+                        else 'Average net per calendar day (÷ weekdays in range)'
+                    )
+                    st.subheader("Average net per calendar day")
+                    fig = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Avg_Net_Per_Weekday',
+                        labels={'Avg_Net_Per_Weekday': 'Avg net (£)', 'Day': 'Day of Week'},
+                        color='Avg_Net_Per_Weekday',
+                        color_continuous_scale='Teal',
+                        title=title,
+                    )
+                    fig.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order},
+                    )
+                    render_chart(fig)
+
+                st.subheader("Average gross per calendar day")
+                fig_g = px.bar(
+                    day_sales_plot,
+                    x='Day',
+                    y='Avg_Gross_Per_Weekday',
+                    labels={'Avg_Gross_Per_Weekday': 'Avg gross (£)', 'Day': 'Day of Week'},
+                    color='Avg_Gross_Per_Weekday',
+                    color_continuous_scale='Purples',
+                    title=(
+                        f'Avg gross per calendar day - {selected_employee}'
+                        if selected_employee != 'All'
+                        else 'Average gross per calendar day (÷ weekdays in range)'
+                    ),
+                )
+                fig_g.update_layout(
+                    height=380,
+                    showlegend=False,
+                    xaxis={'categoryorder': 'array', 'categoryarray': day_order},
+                )
+                render_chart(fig_g)
+
+                st.subheader("Weekday detail table")
+                display_df = day_sales_plot.copy()
+                display_df['Total_Net'] = display_df['Net_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Total_Gross'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Avg_Net_Per_Day'] = display_df['Avg_Net_Per_Weekday'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Avg_Gross_Per_Day'] = display_df['Avg_Gross_Per_Weekday'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Avg_Ticket'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Std_Dev_Ticket'] = display_df['Net_Sales_Std'].apply(
+                    lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A"
+                )
+                display_df = display_df[
+                    [
+                        'Day',
+                        'Weekdays_In_Range',
+                        'Total_Net',
+                        'Total_Gross',
+                        'Avg_Net_Per_Day',
+                        'Avg_Gross_Per_Day',
+                        'Transaction_Count',
+                        'Avg_Ticket',
+                        'Std_Dev_Ticket',
+                    ]
+                ]
+                display_df.columns = [
+                    'Day',
+                    'Weekdays in range',
+                    'Total net',
+                    'Total gross',
+                    'Avg net / that weekday',
+                    'Avg gross / that weekday',
+                    'Transactions',
+                    'Avg ticket (net)',
+                    'Std dev (ticket)',
+                ]
+                st.dataframe(display_df, width="stretch", hide_index=True)
             else:
                 st.warning(f"No valid day of week data found for {selected_employee if selected_employee != 'All' else 'the selected filters'}. Found {len(work_df)} total rows but none with valid day of week.")
     
