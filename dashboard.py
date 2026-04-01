@@ -824,6 +824,22 @@ def _clean_currency(value):
         return 0
 
 
+def _to_datetime_naive_utc(series, *, format=None, unit=None, errors='coerce'):
+    """
+    Parse datetimes to timezone-naive (UTC instant). Required when strings mix offsets
+    (+01:00 vs Z); pandas raises 'Mixed timezones detected' without utc=True.
+    """
+    if unit is not None:
+        s = pd.to_datetime(series, unit=unit, errors=errors, utc=True)
+    elif format is not None:
+        s = pd.to_datetime(series, format=format, errors=errors, utc=True)
+    else:
+        s = pd.to_datetime(series, errors=errors, utc=True)
+    if getattr(s.dtype, 'tz', None) is not None:
+        s = s.dt.tz_convert('UTC').dt.tz_localize(None)
+    return s
+
+
 def _normalize_supabase_columns(df):
     """Map Supabase column names to expected format (handles case variations from CSV import)"""
     # Strip BOM and whitespace from column names
@@ -876,11 +892,14 @@ def _process_sales_df(df):
         df['Gross_Sales'] = df[gross_col].apply(_clean_currency)
     else:
         df['Gross_Sales'] = df['Net_Sales'] + df['Refunds'].abs()
-    # Parse dates: try DD/MM/YYYY first, then ISO (YYYY-MM-DD) - keep original for fallback
+    # Parse dates: try DD/MM/YYYY first; fallback infers ISO etc. (utc=True avoids mixed-TZ errors)
     date_series = df[date_col].copy()
-    df['Date'] = pd.to_datetime(date_series, format='%d/%m/%Y', errors='coerce')
-    if df['Date'].isna().any():
-        df['Date'] = pd.to_datetime(date_series, errors='coerce')  # fallback uses original values
+    parsed_dates = pd.to_datetime(date_series, format='%d/%m/%Y', errors='coerce')
+    na_mask = parsed_dates.isna()
+    if na_mask.any():
+        parsed_dates = parsed_dates.copy()
+        parsed_dates.loc[na_mask] = _to_datetime_naive_utc(date_series.loc[na_mask])
+    df['Date'] = parsed_dates
     df = df[df['Date'].notna()]
     df = df[(df['Net_Sales'] > 0) | (df['Refunds'] != 0)]
     emp_col = next((c for c in df.columns if str(c).lower() == 'employee'), None)
@@ -902,9 +921,9 @@ def _process_sales_df(df):
         time_vals = df[time_col].copy()
         # Use pandas numeric check — np.issubdtype fails on StringDtype / pyarrow dtypes (common on Streamlit Cloud).
         if pd.api.types.is_numeric_dtype(time_vals):
-            time_vals = pd.to_datetime(time_vals, unit='s', errors='coerce')
+            time_vals = _to_datetime_naive_utc(time_vals, unit='s')
         else:
-            time_vals = pd.to_datetime(time_vals, errors='coerce')
+            time_vals = _to_datetime_naive_utc(time_vals)
         df['Time_Parsed'] = time_vals
         # Supabase may return Python datetime objects (dtype object) - ensure we can extract hour
         def _extract_hour(val):
@@ -931,7 +950,7 @@ def _process_sales_df(df):
             df['Hour'] = np.nan
     # Fallback: extract hour from Date if Date has time component (e.g. full datetime string)
     if 'Hour' not in df.columns or (df['Hour'].isna().all() if 'Hour' in df.columns else False):
-        date_parsed = pd.to_datetime(df['Date'], errors='coerce')
+        date_parsed = _to_datetime_naive_utc(df['Date'])
         if pd.api.types.is_datetime64_any_dtype(date_parsed) and date_parsed.notna().any():
             has_time = date_parsed.dt.hour.notna() & (date_parsed.dt.hour != 0)
             if has_time.any():
@@ -942,7 +961,7 @@ def _process_sales_df(df):
             df['Hour'] = np.nan
     # Ensure Date is datetime before using .dt accessor
     if 'Date' in df.columns:
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df['Date'] = _to_datetime_naive_utc(df['Date'])
     if 'Day of the Week' not in df.columns or df['Day of the Week'].isna().all():
         if 'Date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['Date']) and df['Date'].notna().any():
             df['Day of the Week'] = df['Date'].dt.day_name()
