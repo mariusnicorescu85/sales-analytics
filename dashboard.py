@@ -900,7 +900,8 @@ def _process_sales_df(df):
     if time_col:
         # Handle numeric Unix timestamps (Supabase/PostgreSQL may return these)
         time_vals = df[time_col].copy()
-        if np.issubdtype(time_vals.dtype, np.number):
+        # Use pandas numeric check — np.issubdtype fails on StringDtype / pyarrow dtypes (common on Streamlit Cloud).
+        if pd.api.types.is_numeric_dtype(time_vals):
             time_vals = pd.to_datetime(time_vals, unit='s', errors='coerce')
         else:
             time_vals = pd.to_datetime(time_vals, errors='coerce')
