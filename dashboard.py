@@ -1801,8 +1801,16 @@ def main():
     att_col = 'Commission_Employee' if 'Commission_Employee' in filtered_sales.columns else 'Employee'
     unique_employees_count = filtered_sales[att_col].nunique() if att_col in filtered_sales.columns else 0
 
-    # Multi-year comparison: same calendar period in each previous year (respects shop, employee, date filters)
-    year_comparisons = {}  # year -> {net_sales, gross_sales, transactions, avg_transaction, refunds, active_employees}
+    # Multi-year comparison: same calendar dates shifted back by whole years (respects shop, employee, date filters).
+    # Labels show the actual comparison window (not calendar-year totals), e.g. Aug 2025–Feb 2026 vs Aug 2024–Feb 2025.
+    year_comparison_rows = []
+
+    def _comparison_period_label(d0, d1):
+        """Human-readable span for the prior-period window (sidebar dates may be date or datetime)."""
+        a = pd.Timestamp(d0).normalize()
+        b = pd.Timestamp(d1).normalize()
+        return f"{a.strftime('%d %b %Y')} – {b.strftime('%d %b %Y')}"
+
     if start_date and end_date and work_df['Date'].notna().any():
         def _shift_date_to_year(d, years_back):
             try:
@@ -1830,33 +1838,35 @@ def main():
             gross = py_sales['Gross_Sales'].sum()
             net = py_sales['Net_Sales'].sum()
             ref = abs(py_sales['Refunds'].sum()) if 'Refunds' in py_sales.columns else 0
-            # Use end year of comparison period for display (e.g. Dec 2024–Feb 2025 -> "vs 2025")
-            display_year = py_end.year
-            year_comparisons[display_year] = {
+            period_label = _comparison_period_label(py_start, py_end)
+            year_comparison_rows.append({
+                'sort_key': pd.Timestamp(py_end).normalize(),
+                'period_label': period_label,
                 'net_sales': net,
                 'gross_sales': gross,
                 'transactions': tx,
                 'avg_transaction': net / tx if tx > 0 else 0,
                 'refunds': ref,
                 'active_employees': py_sales[emp_col_comp].nunique() if emp_col_comp in py_sales.columns else 0,
-            }
+            })
 
     def _year_comparison_lines(metric_key, current_val, is_pct=False, is_currency=False):
-        """Build comparison lines for a metric: (comparison_text, value_text) for each year. Value = actual amount that year."""
+        """Build comparison lines for a metric: (comparison_text, value_text) for each prior window. Value = actual amount that period."""
         result = []
-        for year, data in sorted(year_comparisons.items(), reverse=True):
+        for data in sorted(year_comparison_rows, key=lambda r: r['sort_key'], reverse=True):
             prev = data.get(metric_key)
             if prev is None or (is_pct and prev == 0):
                 continue
+            plab = data.get('period_label', '')
             if is_pct:
                 change = (current_val - prev) / prev * 100
-                line = f"vs {year}: {change:+.1f}%"
+                line = f"vs {plab}: {change:+.1f}%"
             elif is_currency:
                 change = current_val - prev
-                line = f"vs {year}: £{change:+,.2f}"
+                line = f"vs {plab}: £{change:+,.2f}"
             else:
                 change = current_val - prev
-                line = f"vs {year}: {change:+,.0f}"
+                line = f"vs {plab}: {change:+,.0f}"
             # Format actual value for that year
             if is_currency or metric_key in ('net_sales', 'gross_sales', 'refunds', 'avg_transaction'):
                 value_fmt = f"£{prev:,.2f}"
