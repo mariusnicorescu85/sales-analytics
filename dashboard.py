@@ -520,6 +520,44 @@ def _compute_employee_performance_from_sales(sales_df):
     return agg[agg['Employee'].notna() & (agg['Employee'].astype(str) != '')]
 
 
+def _compute_employee_monthly_net_sales_pivot(sales_df):
+    """
+    Employee × calendar month matrix of net sales (same attribution column as leaderboard).
+    Returns (wide_pivot_for_display_export, long_df_for_optional_use) or (None, None).
+    """
+    if sales_df is None or len(sales_df) == 0:
+        return None, None
+    emp_col = 'Commission_Employee' if 'Commission_Employee' in sales_df.columns else 'Employee'
+    if emp_col not in sales_df.columns or 'Date' not in sales_df.columns:
+        return None, None
+    df = sales_df[sales_df['Date'].notna()].copy()
+    if len(df) == 0:
+        return None, None
+    df = df[df[emp_col].notna() & (df[emp_col].astype(str).str.strip() != '')]
+    if len(df) == 0:
+        return None, None
+    df['YearMonth'] = df['Date'].dt.to_period('M')
+    weight_col = 'Transaction_Weight' if 'Transaction_Weight' in df.columns else None
+    if weight_col:
+        g = df.groupby([emp_col, 'YearMonth'], as_index=False).agg(
+            Net_Sales=('Net_Sales', 'sum'),
+            Transaction_Count=(weight_col, 'sum'),
+        )
+    else:
+        g = df.groupby([emp_col, 'YearMonth'], as_index=False).agg(
+            Net_Sales=('Net_Sales', 'sum'),
+            Transaction_Count=('Net_Sales', 'count'),
+        )
+    g = g.rename(columns={emp_col: 'Employee'})
+    g['YearMonth'] = g['YearMonth'].astype(str)
+    pivot = g.pivot_table(index='Employee', columns='YearMonth', values='Net_Sales', aggfunc='sum', fill_value=0.0)
+    month_cols = sorted(pivot.columns)
+    pivot = pivot.reindex(columns=month_cols)
+    row_totals = pivot.sum(axis=1).sort_values(ascending=False)
+    pivot = pivot.loc[row_totals.index]
+    return pivot, g
+
+
 def _compute_hourly_from_sales(sales_df):
     """Compute hourly patterns from sales transaction data."""
     if sales_df is None or len(sales_df) == 0 or 'Hour' not in sales_df.columns:
@@ -2536,6 +2574,48 @@ def main():
                 else:
                     st.info("No refunds recorded for any employees")
             
+            monthly_pivot, monthly_long = _compute_employee_monthly_net_sales_pivot(perf_base)
+            if (
+                monthly_pivot is not None
+                and len(monthly_pivot) > 0
+                and start_date is not None
+                and end_date is not None
+            ):
+                st.subheader("📅 Month-by-month net sales by employee")
+                range_caption = (
+                    f"Within **{start_date.strftime('%b %d, %Y')}**–**{end_date.strftime('%b %d, %Y')}**, "
+                    "each column is a calendar month; values are **net sales (£)** (commission attribution, same as leaderboard)."
+                )
+                st.caption(range_caption)
+                if selected_shop != 'All Shops':
+                    st.caption(f"Shop: **{selected_shop}**.")
+                if not show_inactive_in_filter and active_employees:
+                    st.caption("Only **active** employees are included (same as leaderboard when inactive are hidden).")
+                month_cols = [c for c in monthly_pivot.columns]
+                export_monthly = monthly_pivot.reset_index()
+                export_monthly['Total'] = export_monthly[month_cols].sum(axis=1)
+                safe_shop = re.sub(r'[^\w\-]+', '_', str(selected_shop))[:40]
+                csv_name = f"employee_monthly_net_sales_{safe_shop}_{start_date}_{end_date}.csv"
+                col_m1, col_m2 = st.columns([1, 4])
+                with col_m1:
+                    st.download_button(
+                        "📥 Export monthly CSV",
+                        export_monthly.to_csv(index=False),
+                        csv_name,
+                        "text/csv",
+                        key="download_employee_monthly_csv",
+                        help="Employee rows, one column per month, plus Total net sales in range",
+                    )
+                display_monthly = export_monthly.copy()
+                for mc in month_cols:
+                    display_monthly[mc] = display_monthly[mc].apply(
+                        lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
+                    )
+                display_monthly['Total'] = display_monthly['Total'].apply(
+                    lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
+                )
+                st.dataframe(display_monthly, width="stretch", hide_index=True, height=min(520, 42 + 36 * len(display_monthly)))
+
             st.subheader("Complete Employee Performance Table")
             export_df = employee_df_display.sort_values('Net_Sales_Sum', ascending=False).copy()
             export_df = export_df.rename(columns={
