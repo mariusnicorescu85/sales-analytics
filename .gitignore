@@ -36,3 +36,7 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+docs/
+staff_benchmark_database_search_document.docx
+SYSTEM_ANALYSIS.md

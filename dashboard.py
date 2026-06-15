@@ -520,42 +520,63 @@ def _compute_employee_performance_from_sales(sales_df):
     return agg[agg['Employee'].notna() & (agg['Employee'].astype(str) != '')]
 
 
-def _compute_employee_monthly_net_sales_pivot(sales_df):
+def _compute_employee_monthly_sales_pivots(sales_df):
     """
-    Employee × calendar month matrix of net sales (same attribution column as leaderboard).
-    Returns (wide_pivot_for_display_export, long_df_for_optional_use) or (None, None).
+    Employee × calendar month matrices for net and (if present) gross sales.
+    Same attribution as the leaderboard (Commission_Employee when available).
+    Returns (pivot_net, pivot_gross_or_none, month_cols) or (None, None, None).
     """
     if sales_df is None or len(sales_df) == 0:
-        return None, None
+        return None, None, None
     emp_col = 'Commission_Employee' if 'Commission_Employee' in sales_df.columns else 'Employee'
     if emp_col not in sales_df.columns or 'Date' not in sales_df.columns:
-        return None, None
+        return None, None, None
     df = sales_df[sales_df['Date'].notna()].copy()
     if len(df) == 0:
-        return None, None
+        return None, None, None
     df = df[df[emp_col].notna() & (df[emp_col].astype(str).str.strip() != '')]
     if len(df) == 0:
-        return None, None
+        return None, None, None
     df['YearMonth'] = df['Date'].dt.to_period('M')
     weight_col = 'Transaction_Weight' if 'Transaction_Weight' in df.columns else None
+    has_gross = 'Gross_Sales' in df.columns
+    group_cols = [emp_col, 'YearMonth']
     if weight_col:
-        g = df.groupby([emp_col, 'YearMonth'], as_index=False).agg(
-            Net_Sales=('Net_Sales', 'sum'),
-            Transaction_Count=(weight_col, 'sum'),
-        )
+        if has_gross:
+            g = df.groupby(group_cols, as_index=False).agg(
+                Net_Sales=('Net_Sales', 'sum'),
+                Gross_Sales=('Gross_Sales', 'sum'),
+                Transaction_Count=(weight_col, 'sum'),
+            )
+        else:
+            g = df.groupby(group_cols, as_index=False).agg(
+                Net_Sales=('Net_Sales', 'sum'),
+                Transaction_Count=(weight_col, 'sum'),
+            )
     else:
-        g = df.groupby([emp_col, 'YearMonth'], as_index=False).agg(
-            Net_Sales=('Net_Sales', 'sum'),
-            Transaction_Count=('Net_Sales', 'count'),
-        )
+        if has_gross:
+            g = df.groupby(group_cols, as_index=False).agg(
+                Net_Sales=('Net_Sales', 'sum'),
+                Gross_Sales=('Gross_Sales', 'sum'),
+                Transaction_Count=('Net_Sales', 'count'),
+            )
+        else:
+            g = df.groupby(group_cols, as_index=False).agg(
+                Net_Sales=('Net_Sales', 'sum'),
+                Transaction_Count=('Net_Sales', 'count'),
+            )
     g = g.rename(columns={emp_col: 'Employee'})
     g['YearMonth'] = g['YearMonth'].astype(str)
-    pivot = g.pivot_table(index='Employee', columns='YearMonth', values='Net_Sales', aggfunc='sum', fill_value=0.0)
-    month_cols = sorted(pivot.columns)
-    pivot = pivot.reindex(columns=month_cols)
-    row_totals = pivot.sum(axis=1).sort_values(ascending=False)
-    pivot = pivot.loc[row_totals.index]
-    return pivot, g
+    pivot_net = g.pivot_table(index='Employee', columns='YearMonth', values='Net_Sales', aggfunc='sum', fill_value=0.0)
+    month_cols = sorted(pivot_net.columns)
+    pivot_net = pivot_net.reindex(columns=month_cols)
+    row_totals = pivot_net.sum(axis=1).sort_values(ascending=False)
+    pivot_net = pivot_net.loc[row_totals.index]
+    pivot_gross = None
+    if has_gross:
+        pivot_gross = g.pivot_table(index='Employee', columns='YearMonth', values='Gross_Sales', aggfunc='sum', fill_value=0.0)
+        pivot_gross = pivot_gross.reindex(index=pivot_net.index, columns=month_cols, fill_value=0.0)
+    return pivot_net, pivot_gross, month_cols
 
 
 def _compute_hourly_from_sales(sales_df):
@@ -1013,8 +1034,13 @@ def _process_sales_df(df):
 
 def _load_from_csv():
     """Fallback: load from local CSV files when Supabase fails"""
-    # Try script dir first, then cwd (Streamlit may run from different path)
-    search_dirs = [Path(__file__).resolve().parent, Path.cwd()]
+    # Try project root, docs/, and cwd (Streamlit may run from different path)
+    root = Path(__file__).resolve().parent
+    search_dirs = []
+    for base in (root, root / 'docs', Path.cwd(), Path.cwd() / 'docs'):
+        resolved = base.resolve()
+        if resolved not in search_dirs:
+            search_dirs.append(resolved)
     csv_files = [
         ("PYT Sales Data_rows.csv", "PYT"),
         ("Opatra Sales Data_rows.csv", "Opatra"),
@@ -1072,7 +1098,14 @@ def load_sales_data():
                 if all_dfs:
                     data_source = "Supabase"
             except Exception as e:
-                st.warning(f"Supabase connection failed: {e}")
+                err = str(e)
+                if 'getaddrinfo failed' in err or '11001' in err:
+                    st.warning(
+                        "Supabase connection failed: cannot resolve SUPABASE_URL host "
+                        "(check the URL in .env matches your project under Supabase → Settings → API)."
+                    )
+                else:
+                    st.warning(f"Supabase connection failed: {e}")
 
         # Fallback to local CSV if Supabase returned nothing
         if not all_dfs:
@@ -2574,29 +2607,52 @@ def main():
                 else:
                     st.info("No refunds recorded for any employees")
             
-            monthly_pivot, monthly_long = _compute_employee_monthly_net_sales_pivot(perf_base)
+            monthly_net, monthly_gross, month_cols = _compute_employee_monthly_sales_pivots(perf_base)
             if (
-                monthly_pivot is not None
-                and len(monthly_pivot) > 0
+                monthly_net is not None
+                and len(monthly_net) > 0
                 and start_date is not None
                 and end_date is not None
             ):
-                st.subheader("📅 Month-by-month net sales by employee")
+                st.subheader("📅 Month-by-month sales by employee")
                 range_caption = (
                     f"Within **{start_date.strftime('%b %d, %Y')}**–**{end_date.strftime('%b %d, %Y')}**, "
-                    "each column is a calendar month; values are **net sales (£)** (commission attribution, same as leaderboard)."
+                    "each column is a calendar month (commission attribution, same as leaderboard). "
+                    "**Net** is after discounts/refunds as in your data; **gross** is pre-net where the source provides it."
                 )
                 st.caption(range_caption)
                 if selected_shop != 'All Shops':
                     st.caption(f"Shop: **{selected_shop}**.")
                 if not show_inactive_in_filter and active_employees:
                     st.caption("Only **active** employees are included (same as leaderboard when inactive are hidden).")
-                month_cols = [c for c in monthly_pivot.columns]
-                export_monthly = monthly_pivot.reset_index()
-                export_monthly['Total'] = export_monthly[month_cols].sum(axis=1)
+
                 safe_shop = re.sub(r'[^\w\-]+', '_', str(selected_shop))[:40]
-                csv_name = f"employee_monthly_net_sales_{safe_shop}_{start_date}_{end_date}.csv"
-                col_m1, col_m2 = st.columns([1, 4])
+                export_net = monthly_net.reset_index()
+                export_net['Total_Net'] = export_net[month_cols].sum(axis=1)
+                if monthly_gross is not None:
+                    export_gross_only = monthly_gross.reset_index()
+                    export_gross_only = export_gross_only.rename(
+                        columns={m: f"{m} Gross" for m in month_cols}
+                    )
+                    export_monthly = export_net.rename(columns={m: f"{m} Net" for m in month_cols}).merge(
+                        export_gross_only[["Employee"] + [f"{m} Gross" for m in month_cols]],
+                        on='Employee',
+                        how='left',
+                    )
+                    ordered = ['Employee']
+                    for m in month_cols:
+                        ordered.extend([f'{m} Net', f'{m} Gross'])
+                    ordered.extend(['Total_Net', 'Total_Gross'])
+                    export_monthly['Total_Gross'] = export_monthly[[f'{m} Gross' for m in month_cols]].sum(axis=1)
+                    export_monthly = export_monthly[ordered]
+                    csv_help = "Each month has Net and Gross columns, plus totals"
+                    csv_name = f"employee_monthly_net_gross_sales_{safe_shop}_{start_date}_{end_date}.csv"
+                else:
+                    export_monthly = export_net.rename(columns={m: f"{m} Net" for m in month_cols})
+                    csv_help = "Net sales only (no Gross_Sales column in loaded data)"
+                    csv_name = f"employee_monthly_net_sales_{safe_shop}_{start_date}_{end_date}.csv"
+
+                col_m1, _ = st.columns([1, 4])
                 with col_m1:
                     st.download_button(
                         "📥 Export monthly CSV",
@@ -2604,17 +2660,40 @@ def main():
                         csv_name,
                         "text/csv",
                         key="download_employee_monthly_csv",
-                        help="Employee rows, one column per month, plus Total net sales in range",
+                        help=csv_help,
                     )
-                display_monthly = export_monthly.copy()
-                for mc in month_cols:
-                    display_monthly[mc] = display_monthly[mc].apply(
-                        lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
-                    )
-                display_monthly['Total'] = display_monthly['Total'].apply(
-                    lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
-                )
-                st.dataframe(display_monthly, width="stretch", hide_index=True, height=min(520, 42 + 36 * len(display_monthly)))
+
+                def _fmt_currency_table(df_numeric, value_cols, total_col_name):
+                    d = df_numeric.copy()
+                    for c in value_cols:
+                        if c in d.columns:
+                            d[c] = d[c].apply(
+                                lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
+                            )
+                    if total_col_name in d.columns:
+                        d[total_col_name] = d[total_col_name].apply(
+                            lambda x: f"£{float(x):,.2f}" if pd.notna(x) else "£0.00"
+                        )
+                    return d
+
+                row_h = min(520, 42 + 36 * len(monthly_net))
+                if monthly_gross is not None:
+                    tab_net, tab_gross = st.tabs(["Net (£)", "Gross (£)"])
+                    with tab_net:
+                        dn = export_net.copy()
+                        dn = _fmt_currency_table(dn, month_cols, 'Total_Net')
+                        st.dataframe(dn, width="stretch", hide_index=True, height=row_h)
+                    with tab_gross:
+                        dg = monthly_gross.reset_index()
+                        dg['Total_Gross'] = dg[month_cols].sum(axis=1)
+                        dg = _fmt_currency_table(dg, month_cols, 'Total_Gross')
+                        st.dataframe(dg, width="stretch", hide_index=True, height=row_h)
+                else:
+                    dn = export_net.copy()
+                    if 'Total_Net' not in dn.columns:
+                        dn['Total_Net'] = dn[month_cols].sum(axis=1)
+                    dn = _fmt_currency_table(dn, month_cols, 'Total_Net')
+                    st.dataframe(dn, width="stretch", hide_index=True, height=row_h)
 
             st.subheader("Complete Employee Performance Table")
             export_df = employee_df_display.sort_values('Net_Sales_Sum', ascending=False).copy()
