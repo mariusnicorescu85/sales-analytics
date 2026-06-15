@@ -12,6 +12,14 @@ import re
 import json
 warnings.filterwarnings('ignore')
 
+# Average transaction metric definitions (shown in dashboard help text)
+AVG_TX_COUNT_HELP = (
+    "Total Transactions uses weighted till counts: split-commission sales count as one transaction "
+    "(Transaction_Weight sums to unique sales)."
+)
+AVG_NET_TX_HELP = "Total Net Sales ÷ Total Transactions. Net = ex-VAT revenue from the till export."
+AVG_GROSS_TX_HELP = "Total Gross Sales ÷ Total Transactions. Gross = customer-facing till price (inc VAT)."
+
 # Employee status - stored in Supabase (with local JSON fallback when Supabase unavailable)
 EMPLOYEE_STATUS_FILE = 'employee_status.json'
 
@@ -1864,7 +1872,8 @@ def main():
     total_gross_sales = filtered_sales['Gross_Sales'].sum()
     total_transactions = filtered_sales['Transaction_Weight'].sum() if 'Transaction_Weight' in filtered_sales.columns else len(filtered_sales)
     total_transactions = int(round(total_transactions))  # Weight sum may be float
-    avg_transaction = total_net_sales / total_transactions if total_transactions > 0 else 0
+    avg_net_transaction = total_net_sales / total_transactions if total_transactions > 0 else 0
+    avg_gross_transaction = total_gross_sales / total_transactions if total_transactions > 0 else 0
     
     # Calculate refunds - ensure column exists and handle properly
     if 'Refunds' in filtered_sales.columns:
@@ -1936,7 +1945,8 @@ def main():
                 'net_sales': net,
                 'gross_sales': gross,
                 'transactions': tx,
-                'avg_transaction': net / tx if tx > 0 else 0,
+                'avg_net_transaction': net / tx if tx > 0 else 0,
+                'avg_gross_transaction': gross / tx if tx > 0 else 0,
                 'refunds': ref,
                 'active_employees': py_sales[emp_col_comp].nunique() if emp_col_comp in py_sales.columns else 0,
             })
@@ -1959,20 +1969,23 @@ def main():
                 change = current_val - prev
                 line = f"vs {plab}: {change:+,.0f}"
             # Format actual value for that year
-            if is_currency or metric_key in ('net_sales', 'gross_sales', 'refunds', 'avg_transaction'):
+            if is_currency or metric_key in ('net_sales', 'gross_sales', 'refunds', 'avg_net_transaction', 'avg_gross_transaction'):
                 value_fmt = f"£{prev:,.2f}"
             else:
                 value_fmt = f"{int(prev):,}"
             result.append((line, value_fmt))
         return result
 
-    def _metric_card_html(label, value_fmt, delta_text=None, delta_positive=None, year_lines=None):
+    def _metric_card_html(label, value_fmt, delta_text=None, delta_positive=None, year_lines=None, help_text=None):
         """Build a full metric card as HTML so label, value, delta and year comparisons are all inside the box."""
         # When we have year comparisons, don't show the first entry (delta) - only show the block after the separation line
         delta_html = ""
         if delta_text and not year_lines:
             delta_color = "#28a745" if (delta_positive is True) else "#dc3545" if (delta_positive is False) else "#666"
             delta_html = f'<div style="font-size:0.85em;color:{delta_color};margin-top:2px">{delta_text}</div>'
+        help_html = ""
+        if help_text:
+            help_html = f'<div style="font-size:0.75em;color:#888;margin-top:4px;line-height:1.3">{help_text}</div>'
         years_html = ""
         if year_lines:
             is_refund = "refund" in label.lower()
@@ -1996,6 +2009,7 @@ def main():
             <div style="font-size:0.85em;color:#666">{label}</div>
             <div style="font-size:1.5em;font-weight:600">{value_fmt}</div>
             {delta_html}
+            {help_html}
             {years_html}
         </div>
         """
@@ -2010,19 +2024,22 @@ def main():
         )
         
         comp_tx = comparison_sales['Transaction_Weight'].sum() if 'Transaction_Weight' in comparison_sales.columns else len(comparison_sales)
-        all_avg_transaction = comparison_sales['Net_Sales'].sum() / comp_tx if comp_tx > 0 else 0
+        comp_tx = int(round(comp_tx)) if comp_tx else 0
+        all_avg_net_transaction = comparison_sales['Net_Sales'].sum() / comp_tx if comp_tx > 0 else 0
+        all_avg_gross_transaction = comparison_sales['Gross_Sales'].sum() / comp_tx if comp_tx > 0 else 0
         all_total_sales = comparison_sales['Net_Sales'].sum()
         employee_share = (total_net_sales / all_total_sales * 100) if all_total_sales > 0 else 0
         
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+        col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
         # Year comparisons (same employee, same period previous years)
         net_lines = _year_comparison_lines('net_sales', total_net_sales, is_pct=True)
         gross_lines = _year_comparison_lines('gross_sales', total_gross_sales, is_pct=True)
         tx_lines = _year_comparison_lines('transactions', total_transactions, is_pct=True)
-        avg_lines = _year_comparison_lines('avg_transaction', avg_transaction, is_currency=True)
+        avg_net_lines = _year_comparison_lines('avg_net_transaction', avg_net_transaction, is_currency=True)
+        avg_gross_lines = _year_comparison_lines('avg_gross_transaction', avg_gross_transaction, is_currency=True)
         ref_lines = _year_comparison_lines('refunds', total_refunds, is_currency=True)
 
-        def _emp_metric(label, value_fmt, lines, delta_override=None):
+        def _emp_metric(label, value_fmt, lines, delta_override=None, help_text=None):
             pos = None
             first = lines[0] if lines else None
             d = first[0] if isinstance(first, tuple) else first
@@ -2033,7 +2050,7 @@ def main():
                 if "refund" in label.lower() and pos is not None:
                     pos = not pos  # less refunds = good
             # Don't show first entry (delta) when we have year_lines - only show the block after separation line
-            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=lines)
+            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=lines, help_text=help_text)
             st.html(html)
 
         with col1:
@@ -2042,20 +2059,27 @@ def main():
         with col2:
             _emp_metric("Total Gross Sales", f"£{total_gross_sales:,.2f}", gross_lines)
         with col3:
-            _emp_metric("Total Transactions", f"{total_transactions:,}", tx_lines)
+            _emp_metric("Total Transactions", f"{total_transactions:,}", tx_lines, help_text=AVG_TX_COUNT_HELP)
         with col4:
             delta_override = None
-            if avg_transaction - all_avg_transaction != 0 and all_avg_transaction > 0:
-                d = avg_transaction - all_avg_transaction
+            if avg_net_transaction - all_avg_net_transaction != 0 and all_avg_net_transaction > 0:
+                d = avg_net_transaction - all_avg_net_transaction
                 delta_override = f"-£{abs(d):,.2f}" if d < 0 else f"+£{d:,.2f}"
                 delta_override = delta_override + " vs avg"
-            _emp_metric("Avg Transaction", f"£{avg_transaction:,.2f}", avg_lines, delta_override)
+            _emp_metric("Avg Net Transaction", f"£{avg_net_transaction:,.2f}", avg_net_lines, delta_override, help_text=AVG_NET_TX_HELP)
         with col5:
-            _emp_metric("Total Refunds", f"£{total_refunds:,.2f}", ref_lines)
+            delta_override = None
+            if avg_gross_transaction - all_avg_gross_transaction != 0 and all_avg_gross_transaction > 0:
+                d = avg_gross_transaction - all_avg_gross_transaction
+                delta_override = f"-£{abs(d):,.2f}" if d < 0 else f"+£{d:,.2f}"
+                delta_override = delta_override + " vs avg"
+            _emp_metric("Avg Gross Transaction", f"£{avg_gross_transaction:,.2f}", avg_gross_lines, delta_override, help_text=AVG_GROSS_TX_HELP)
         with col6:
+            _emp_metric("Total Refunds", f"£{total_refunds:,.2f}", ref_lines)
+        with col7:
             refund_rate = (total_refunds / total_gross_sales * 100) if total_gross_sales > 0 else 0
             st.metric("Refund Rate", f"{refund_rate:.2f}%")
-        with col7:
+        with col8:
             # Days worked in period
             days_worked = filtered_sales['Date'].nunique()
             st.metric("Days Active", f"{days_worked}")
@@ -2083,7 +2107,16 @@ def main():
             top_product_sales = filtered_sales.groupby('Products')['Net_Sales'].sum().max() if 'Products' in filtered_sales.columns else 0
             st.metric("Top Product Sale", f"£{top_product_sales:,.2f}")
     else:
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        with st.expander("ℹ️ How average transaction is calculated", expanded=False):
+            st.markdown(f"""
+**Avg Net Transaction** — {AVG_NET_TX_HELP}
+
+**Avg Gross Transaction** — {AVG_GROSS_TX_HELP}
+
+**Total Transactions** — {AVG_TX_COUNT_HELP}
+            """)
+
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
         def _render_metric_with_years(label, value_fmt, metric_key, current_val, is_pct=False, is_currency=False, help_base="", show_year_comparisons=True):
             lines = _year_comparison_lines(metric_key, current_val, is_pct=is_pct, is_currency=is_currency) if show_year_comparisons else []
@@ -2097,7 +2130,7 @@ def main():
                 if "refund" in label.lower() and pos is not None:
                     pos = not pos
             year_lines = lines if show_year_comparisons else None
-            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=year_lines)
+            html = _metric_card_html(label, value_fmt, delta_text=None, delta_positive=pos, year_lines=year_lines, help_text=help_base or None)
             st.html(html)
 
         with col1:
@@ -2105,12 +2138,14 @@ def main():
         with col2:
             _render_metric_with_years("Total Gross Sales", f"£{total_gross_sales:,.2f}", 'gross_sales', total_gross_sales, is_pct=True, help_base="Gross sales before refunds.")
         with col3:
-            _render_metric_with_years("Total Transactions", f"{total_transactions:,}", 'transactions', total_transactions, is_pct=True, help_base="Number of transactions.")
+            _render_metric_with_years("Total Transactions", f"{total_transactions:,}", 'transactions', total_transactions, is_pct=True, help_base=AVG_TX_COUNT_HELP)
         with col4:
-            _render_metric_with_years("Avg Transaction", f"£{avg_transaction:,.2f}", 'avg_transaction', avg_transaction, is_currency=True, help_base="Average transaction value.")
+            _render_metric_with_years("Avg Net Transaction", f"£{avg_net_transaction:,.2f}", 'avg_net_transaction', avg_net_transaction, is_currency=True, help_base=AVG_NET_TX_HELP)
         with col5:
-            _render_metric_with_years("Total Refunds", f"£{total_refunds:,.2f}", 'refunds', total_refunds, is_currency=True, help_base="Total refund amount.")
+            _render_metric_with_years("Avg Gross Transaction", f"£{avg_gross_transaction:,.2f}", 'avg_gross_transaction', avg_gross_transaction, is_currency=True, help_base=AVG_GROSS_TX_HELP)
         with col6:
+            _render_metric_with_years("Total Refunds", f"£{total_refunds:,.2f}", 'refunds', total_refunds, is_currency=True, help_base="Total refund amount.")
+        with col7:
             _render_metric_with_years("Active Employees", f"{unique_employees_count}", 'active_employees', unique_employees_count, show_year_comparisons=False)
         
         # Debug: Show refund statistics if refunds are 0 but should exist
@@ -3221,27 +3256,38 @@ def main():
                 for shop in shops:
                     s = compare_df[compare_df['Shop'] == shop]
                     tx_count = int(round(s['Transaction_Weight'].sum())) if 'Transaction_Weight' in s.columns else len(s)
+                    net_sum = s['Net_Sales'].sum()
+                    gross_sum = s['Gross_Sales'].sum()
                     shop_metrics.append({
                         'Shop': shop,
-                        'Net Sales': s['Net_Sales'].sum(),
+                        'Net Sales': net_sum,
+                        'Gross Sales': gross_sum,
                         'Transactions': tx_count,
-                        'Avg Sale': s['Net_Sales'].mean(),
+                        'Avg Net Transaction': net_sum / tx_count if tx_count > 0 else 0,
+                        'Avg Gross Transaction': gross_sum / tx_count if tx_count > 0 else 0,
                         'Refunds': abs(s['Refunds'].sum()) if 'Refunds' in s.columns else 0,
                     })
                 sm = pd.DataFrame(shop_metrics)
-                sm['Refund Rate %'] = np.where(sm['Net Sales'] > 0, sm['Refunds'] / (sm['Net Sales'] + sm['Refunds']) * 100, 0)
-                col1, col2 = st.columns(2)
+                sm['Refund Rate %'] = np.where(sm['Gross Sales'] > 0, sm['Refunds'] / sm['Gross Sales'] * 100, 0)
+                st.caption(f"Avg Net Transaction: {AVG_NET_TX_HELP} Avg Gross Transaction: {AVG_GROSS_TX_HELP}")
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    fig = px.bar(sm, x='Shop', y='Net Sales', color='Shop', labels={'Net Sales': 'Net Sales (£)'}, title='Total Sales by Shop')
+                    fig = px.bar(sm, x='Shop', y='Net Sales', color='Shop', labels={'Net Sales': 'Net Sales (£)'}, title='Total Net Sales by Shop')
                     fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
                     render_chart(fig)
                 with col2:
-                    fig = px.bar(sm, x='Shop', y='Avg Sale', color='Shop', labels={'Avg Sale': 'Avg Transaction (£)'}, title='Average Transaction by Shop')
+                    fig = px.bar(sm, x='Shop', y='Avg Net Transaction', color='Shop', labels={'Avg Net Transaction': 'Avg Net (£)'}, title='Avg Net Transaction by Shop')
+                    fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
+                    render_chart(fig)
+                with col3:
+                    fig = px.bar(sm, x='Shop', y='Avg Gross Transaction', color='Shop', labels={'Avg Gross Transaction': 'Avg Gross (£)'}, title='Avg Gross Transaction by Shop')
                     fig.update_layout(showlegend=False, height=350, yaxis_tickformat=".2f")
                     render_chart(fig)
                 st.dataframe(sm, width="stretch", hide_index=True, column_config={
                     'Net Sales': st.column_config.NumberColumn('Net Sales (£)', format='£%.2f'),
-                    'Avg Sale': st.column_config.NumberColumn('Avg Sale (£)', format='£%.2f'),
+                    'Gross Sales': st.column_config.NumberColumn('Gross Sales (£)', format='£%.2f'),
+                    'Avg Net Transaction': st.column_config.NumberColumn('Avg Net (£)', format='£%.2f'),
+                    'Avg Gross Transaction': st.column_config.NumberColumn('Avg Gross (£)', format='£%.2f'),
                     'Refunds': st.column_config.NumberColumn('Refunds (£)', format='£%.2f'),
                 })
                 monthly_by_shop = compare_df.groupby([compare_df['Date'].dt.to_period('M'), 'Shop'])['Net_Sales'].sum().reset_index()
