@@ -20,6 +20,20 @@ AVG_TX_COUNT_HELP = (
 AVG_NET_TX_HELP = "Total Net Sales ÷ Total Transactions. Net = ex-VAT revenue from the till export."
 AVG_GROSS_TX_HELP = "Total Gross Sales ÷ Total Transactions. Gross = customer-facing till price (inc VAT)."
 
+CAPTION_NET_VS_GROSS = (
+    "**Net vs gross on this dashboard:** "
+    "**Net (ex-VAT)** — revenue in the till export; used for **totals**, **forecasts**, **trends**, and **product** analytics. "
+    "**Gross (inc VAT)** — customer till price; shown with net for **transaction-average** KPIs only "
+    "(average £ per till sale). Transaction averages = total sales ÷ **weighted** transaction count."
+)
+CAPTION_TX_AVG_SECTION = (
+    "**Transaction averages (net + gross):** Net = ex-VAT ÷ transactions · Gross = till price (inc VAT) ÷ "
+    "the same transaction count. Split-commission sales count as one transaction."
+)
+CAPTION_NET_REVENUE_ONLY = (
+    "**Net revenue only (ex-VAT):** totals and daily/monthly averages below — not the same as average till ticket."
+)
+
 # Employee status - stored in Supabase (with local JSON fallback when Supabase unavailable)
 EMPLOYEE_STATUS_FILE = 'employee_status.json'
 
@@ -596,13 +610,8 @@ def _compute_hourly_from_sales(sales_df):
     valid = valid[valid['Hour'].notna() & (valid['Hour'] >= 0) & (valid['Hour'] <= 23)]
     if len(valid) == 0:
         return None
-    agg = valid.groupby('Hour')['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
-    agg.columns = ['Hour', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count']
-    gross = valid.groupby('Hour')['Gross_Sales'].sum().reset_index()
-    gross.columns = ['Hour', 'Gross_Sales_Sum']
-    agg = agg.merge(gross, on='Hour', how='left')
-    agg['Gross_Sales_Sum'] = agg['Gross_Sales_Sum'].fillna(0)
-    return agg.sort_values('Hour')
+    agg = _aggregate_weighted_tx_metrics(valid, 'Hour')
+    return agg.sort_values('Hour') if agg is not None else None
 
 
 def _parse_positive_product_lines(products):
@@ -640,6 +649,51 @@ def _row_transaction_weight(row):
         return x if x >= 0 else 1.0
     except (TypeError, ValueError):
         return 1.0
+
+
+def _with_tx_weight(df):
+    """Return a copy with _Tx_Weight column for weighted transaction counts."""
+    out = df.copy()
+    if 'Transaction_Weight' in out.columns:
+        out['_Tx_Weight'] = pd.to_numeric(out['Transaction_Weight'], errors='coerce').fillna(1.0)
+    else:
+        out['_Tx_Weight'] = 1.0
+    return out
+
+
+def _aggregate_weighted_tx_metrics(df, group_cols):
+    """
+    Per-group net/gross totals, weighted transaction count, and avg net/gross transaction.
+    Matches Key Metrics: sum(sales) ÷ sum(Transaction_Weight).
+    """
+    if df is None or len(df) == 0:
+        return None
+    gcols = [group_cols] if isinstance(group_cols, str) else list(group_cols)
+    wdf = _with_tx_weight(df)
+    agg = wdf.groupby(gcols, as_index=False).agg(
+        Net_Sales_Sum=('Net_Sales', 'sum'),
+        Gross_Sales_Sum=('Gross_Sales', 'sum'),
+        Transaction_Weight_Sum=('_Tx_Weight', 'sum'),
+    )
+    w = agg['Transaction_Weight_Sum']
+    agg['Transaction_Count'] = w.apply(lambda x: int(round(x)) if pd.notna(x) and x > 0 else 0)
+    agg['Avg_Net_Transaction'] = np.where(w > 0, agg['Net_Sales_Sum'] / w, 0.0)
+    agg['Avg_Gross_Transaction'] = np.where(w > 0, agg['Gross_Sales_Sum'] / w, 0.0)
+    return agg
+
+
+def _avg_transactions_for_frame(df):
+    """Whole-frame avg net/gross transaction and weighted tx count (Key Metrics formula)."""
+    if df is None or len(df) == 0:
+        return 0, 0.0, 0.0
+    wdf = _with_tx_weight(df)
+    w = wdf['_Tx_Weight'].sum()
+    tx = int(round(w)) if w > 0 else 0
+    net = wdf['Net_Sales'].sum()
+    gross = wdf['Gross_Sales'].sum() if 'Gross_Sales' in wdf.columns else net
+    avg_net = net / w if w > 0 else 0.0
+    avg_gross = gross / w if w > 0 else 0.0
+    return tx, avg_net, avg_gross
 
 
 def _product_transaction_key(row):
@@ -1397,6 +1451,7 @@ def _render_best_team_tab(work_df, start_date, end_date, active_employees):
     st.header("🏆 Best Team for Week")
     date_range_note = f"📅 Using: {start_date.strftime('%b %d, %Y')} to {end_date.strftime('%b %d, %Y')}" if (start_date and end_date) else "📅 Using: All dates"
     st.caption(f"Performance profiles, peak times, and scheduling guidance for active employees. {date_range_note}")
+    st.caption(CAPTION_TX_AVG_SECTION)
     best_team_emp_col = 'Commission_Employee' if 'Commission_Employee' in work_df.columns else 'Employee'
     if start_date is not None and end_date is not None:
         best_team_df = _filter_sales_by_calendar_range(work_df, start_date, end_date)
@@ -1415,40 +1470,79 @@ def _render_best_team_tab(work_df, start_date, end_date, active_employees):
         score_df = score_df.copy()
         score_df['Day of the Week'] = pd.to_datetime(score_df['Date'], errors='coerce').dt.day_name()
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    by_day = score_df.groupby([best_team_emp_col, 'Day of the Week'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index()
-    by_day = by_day.rename(columns={'Day of the Week': 'Day', best_team_emp_col: 'Employee', 'sum': 'Total', 'mean': 'Avg', 'count': 'Count'})
+    by_day = _aggregate_weighted_tx_metrics(score_df, [best_team_emp_col, 'Day of the Week'])
+    if by_day is None:
+        st.warning("No data in the selected date range. Try a different date range in the sidebar.")
+        return
+    by_day = by_day.rename(columns={
+        best_team_emp_col: 'Employee',
+        'Day of the Week': 'Day',
+        'Net_Sales_Sum': 'Total',
+        'Transaction_Count': 'Count',
+        'Avg_Net_Transaction': 'Avg_Net_Tx',
+        'Avg_Gross_Transaction': 'Avg_Gross_Tx',
+    })
     score_df_pre_hour = score_df.copy()  # keep before hour filter for day counts
     has_hour = 'Hour' in score_df.columns and score_df['Hour'].notna().any()
     if has_hour:
         score_df['Hour'] = pd.to_numeric(score_df['Hour'], errors='coerce')
         score_df = score_df[score_df['Hour'].notna() & (score_df['Hour'] >= 0) & (score_df['Hour'] <= 23)]
-    by_hour = score_df.groupby([best_team_emp_col, 'Hour'])['Net_Sales'].agg(['sum', 'mean', 'count']).reset_index() if has_hour else None
+    by_hour = _aggregate_weighted_tx_metrics(score_df, [best_team_emp_col, 'Hour']) if has_hour else None
     if by_hour is not None:
-        by_hour = by_hour.rename(columns={best_team_emp_col: 'Employee'})
+        by_hour = by_hour.rename(columns={
+            best_team_emp_col: 'Employee',
+            'Net_Sales_Sum': 'Total',
+            'Avg_Net_Transaction': 'Avg_Net_Tx',
+            'Avg_Gross_Transaction': 'Avg_Gross_Tx',
+        })
     # --- Employee Performance Profiles ---
     st.subheader("📋 Employee Performance Profiles")
-    st.caption("Averages by day, avg by hour, peak day, peak hour — for each active employee.")
-    emp_avg_day = by_day.groupby('Employee')['Avg'].mean().reset_index()
-    emp_avg_day.columns = ['Employee', 'Avg_Sales_Per_Day']
-    emp_peak_day = by_day.loc[by_day.groupby('Employee')['Avg'].idxmax()][['Employee', 'Day', 'Avg']].rename(columns={'Day': 'Peak_Day', 'Avg': 'Peak_Day_Avg'})
-    profile_df = emp_avg_day.merge(emp_peak_day, on='Employee', how='left')
+    st.caption(
+        f"{CAPTION_TX_AVG_SECTION} Profiles show **typical** and **peak** avg net/gross transaction "
+        "by weekday and hour (not daily revenue totals)."
+    )
+    emp_avg_day = by_day.groupby('Employee')['Avg_Net_Tx'].mean().reset_index()
+    emp_avg_day.columns = ['Employee', 'Typical_Avg_Net_Tx']
+    emp_avg_gross_day = by_day.groupby('Employee')['Avg_Gross_Tx'].mean().reset_index()
+    emp_avg_gross_day.columns = ['Employee', 'Typical_Avg_Gross_Tx']
+    emp_peak_day = by_day.loc[by_day.groupby('Employee')['Avg_Net_Tx'].idxmax()][['Employee', 'Day', 'Avg_Net_Tx', 'Avg_Gross_Tx']].rename(
+        columns={'Day': 'Peak_Day', 'Avg_Net_Tx': 'Peak_Net_Tx', 'Avg_Gross_Tx': 'Peak_Gross_Tx'}
+    )
+    profile_df = emp_avg_day.merge(emp_avg_gross_day, on='Employee', how='left').merge(emp_peak_day, on='Employee', how='left')
     if by_hour is not None and len(by_hour) > 0:
-        emp_avg_hour = by_hour.groupby('Employee')['mean'].mean().reset_index()
-        emp_avg_hour.columns = ['Employee', 'Avg_Sales_Per_Hour']
-        emp_peak_hour = by_hour.loc[by_hour.groupby('Employee')['mean'].idxmax()][['Employee', 'Hour', 'mean']].rename(columns={'Hour': 'Peak_Hour', 'mean': 'Peak_Hour_Avg'})
-        profile_df = profile_df.merge(emp_avg_hour, on='Employee', how='left').merge(emp_peak_hour, on='Employee', how='left')
+        emp_avg_hour = by_hour.groupby('Employee')['Avg_Net_Tx'].mean().reset_index()
+        emp_avg_hour.columns = ['Employee', 'Typical_Avg_Net_Tx_Hour']
+        emp_avg_gross_hour = by_hour.groupby('Employee')['Avg_Gross_Tx'].mean().reset_index()
+        emp_avg_gross_hour.columns = ['Employee', 'Typical_Avg_Gross_Tx_Hour']
+        emp_peak_hour = by_hour.loc[by_hour.groupby('Employee')['Avg_Net_Tx'].idxmax()][['Employee', 'Hour', 'Avg_Net_Tx', 'Avg_Gross_Tx']].rename(
+            columns={'Hour': 'Peak_Hour', 'Avg_Net_Tx': 'Peak_Net_Tx_Hour', 'Avg_Gross_Tx': 'Peak_Gross_Tx_Hour'}
+        )
+        profile_df = profile_df.merge(emp_avg_hour, on='Employee', how='left').merge(emp_avg_gross_hour, on='Employee', how='left').merge(emp_peak_hour, on='Employee', how='left')
         profile_df['Peak_Hour'] = profile_df['Peak_Hour'].apply(lambda x: f"{int(x):02d}:00" if pd.notna(x) else '-')
     else:
-        profile_df['Avg_Sales_Per_Hour'] = np.nan
+        profile_df['Typical_Avg_Net_Tx_Hour'] = np.nan
+        profile_df['Typical_Avg_Gross_Tx_Hour'] = np.nan
         profile_df['Peak_Hour'] = '-'
-    profile_df = profile_df.rename(columns={'Avg_Sales_Per_Day': 'Avg Daily (£)', 'Peak_Day': 'Peak Day', 'Peak_Day_Avg': 'Peak Day Avg (£)', 'Avg_Sales_Per_Hour': 'Avg Hourly (£)', 'Peak_Hour': 'Peak Hour'})
-    for c in ['Avg Daily (£)', 'Peak Day Avg (£)', 'Avg Hourly (£)']:
-        if c in profile_df.columns:
-            profile_df[c] = profile_df[c].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else '-')
+    profile_df = profile_df.rename(columns={
+        'Typical_Avg_Net_Tx': 'Typical avg net tx (£)',
+        'Typical_Avg_Gross_Tx': 'Typical avg gross tx (£)',
+        'Peak_Day': 'Peak day',
+        'Peak_Net_Tx': 'Peak day avg net tx (£)',
+        'Peak_Gross_Tx': 'Peak day avg gross tx (£)',
+        'Typical_Avg_Net_Tx_Hour': 'Typical avg net tx by hour (£)',
+        'Typical_Avg_Gross_Tx_Hour': 'Typical avg gross tx by hour (£)',
+        'Peak_Hour': 'Peak hour',
+        'Peak_Net_Tx_Hour': 'Peak hour avg net tx (£)',
+        'Peak_Gross_Tx_Hour': 'Peak hour avg gross tx (£)',
+    })
+    money_cols = [c for c in profile_df.columns if '(£)' in c]
+    for c in money_cols:
+        profile_df[c] = profile_df[c].apply(lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else '-')
     st.dataframe(profile_df, width="stretch", hide_index=True)
     # --- Average per day of week ---
-    st.subheader("📅 Average per day of week")
-    pivot_day_table = by_day.pivot_table(index='Employee', columns='Day', values='Avg', aggfunc='mean').reindex(columns=day_order)
+    st.subheader("📅 Avg net transaction by day of week (ex-VAT)")
+    st.caption("Each cell = that employee's avg **net** transaction on that weekday (total net ÷ weighted transactions).")
+    pivot_day_table = by_day.pivot_table(index='Employee', columns='Day', values='Avg_Net_Tx', aggfunc='mean').reindex(columns=day_order)
     if len(pivot_day_table) > 0:
         pivot_day_display = pivot_day_table.reset_index()
         for col in pivot_day_display.columns:
@@ -1459,22 +1553,23 @@ def _render_best_team_tab(work_df, start_date, end_date, active_employees):
         st.caption("No day-of-week data available.")
     # --- Heatmaps ---
     st.subheader("📊 Performance Heatmaps")
+    st.caption("Heatmaps use **avg net transaction (ex-VAT)** by weekday and hour — not gross till price.")
     col_hm1, col_hm2 = st.columns(2)
     with col_hm1:
-        pivot_day = by_day.pivot_table(index='Employee', columns='Day', values='Avg', aggfunc='mean').reindex(columns=day_order)
+        pivot_day = by_day.pivot_table(index='Employee', columns='Day', values='Avg_Net_Tx', aggfunc='mean').reindex(columns=day_order)
         if len(pivot_day) > 0 and pivot_day.notna().any().any():
-            fig_day = px.imshow(pivot_day.fillna(0), title="Avg Sales by Day (£)", labels=dict(x="Day", y="Employee", color="Avg £"), color_continuous_scale='Blues', aspect='auto')
+            fig_day = px.imshow(pivot_day.fillna(0), title="Avg net transaction by day (£, ex-VAT)", labels=dict(x="Day", y="Employee", color="Avg net £"), color_continuous_scale='Blues', aspect='auto')
             fig_day.update_layout(height=min(400, 80 + len(pivot_day) * 25))
             render_chart(fig_day)
         else:
             st.caption("No day-of-week data available.")
     with col_hm2:
         if by_hour is not None and len(by_hour) > 0:
-            pivot_hour = by_hour.pivot_table(index='Employee', columns='Hour', values='mean', aggfunc='mean')
+            pivot_hour = by_hour.pivot_table(index='Employee', columns='Hour', values='Avg_Net_Tx', aggfunc='mean')
             if len(pivot_hour) > 0:
                 pivot_hour = pivot_hour.reindex(sorted(pivot_hour.columns), axis=1)
                 pivot_hour.columns = [f"{int(c):02d}:00" for c in pivot_hour.columns]
-                fig_hour = px.imshow(pivot_hour.fillna(0), title="Avg Sales by Hour (£)", labels=dict(x="Hour", y="Employee", color="Avg £"), color_continuous_scale='Greens', aspect='auto')
+                fig_hour = px.imshow(pivot_hour.fillna(0), title="Avg net transaction by hour (£, ex-VAT)", labels=dict(x="Hour", y="Employee", color="Avg net £"), color_continuous_scale='Greens', aspect='auto')
                 fig_hour.update_layout(height=min(400, 80 + len(pivot_hour) * 25))
                 render_chart(fig_hour)
             else:
@@ -1498,9 +1593,9 @@ def _render_best_team_tab(work_df, start_date, end_date, active_employees):
         if by_hour is not None and sel_hour_num is not None:
             hour_data = by_hour[(by_hour['Employee'].isin(rec_names)) & (by_hour['Hour'] == sel_hour_num)]
             if len(hour_data) > 0:
-                hour_data = hour_data.sort_values('sum', ascending=False).head(team_size)
+                hour_data = hour_data.sort_values('Total', ascending=False).head(team_size)
                 rec_names = hour_data['Employee'].tolist()
-                rec_total = hour_data['sum'].sum()
+                rec_total = hour_data['Total'].sum()
                 num_slots = score_df[score_df['Hour'] == sel_hour_num]['Date'].nunique()
                 avg_per_slot = rec_total / num_slots if num_slots > 0 else rec_total
                 st.success(f"**Recommended for {sel_day} at {sel_hour}:** " + ", ".join(rec_names) + f" (avg ~£{avg_per_slot:,.2f} per {sel_hour} slot)")
@@ -2107,8 +2202,10 @@ def main():
             top_product_sales = filtered_sales.groupby('Products')['Net_Sales'].sum().max() if 'Products' in filtered_sales.columns else 0
             st.metric("Top Product Sale", f"£{top_product_sales:,.2f}")
     else:
-        with st.expander("ℹ️ How average transaction is calculated", expanded=False):
+        with st.expander("ℹ️ How net and gross are used on this dashboard", expanded=False):
             st.markdown(f"""
+{CAPTION_NET_VS_GROSS}
+
 **Avg Net Transaction** — {AVG_NET_TX_HELP}
 
 **Avg Gross Transaction** — {AVG_GROSS_TX_HELP}
@@ -2182,6 +2279,7 @@ def main():
             st.header(f"📅 Daily Sales Trends - {selected_employee}")
         else:
             st.header("📅 Daily Sales Trends")
+        st.caption(f"{CAPTION_NET_REVENUE_ONLY} For avg net/gross **transaction** KPIs, see **Key Metrics** or **Day of Week** / **Hourly** tabs.")
         
         col1, col2 = st.columns(2)
         
@@ -2249,9 +2347,10 @@ def main():
             st.header("📆 Day of Week Analysis")
 
         st.caption(
-            "Charts use your **filtered transactions**. "
-            "**Weekdays in range** counts how many Mondays, Tuesdays, etc. fall inside the sidebar date range. "
-            "**Avg net (per weekday day)** = total net on that weekday ÷ that count (treats dates with no sales as £0)."
+            f"{CAPTION_NET_VS_GROSS} "
+            "**This tab:** totals and calendar-day averages use **net (ex-VAT)**. "
+            "Transaction-average charts show **net and gross** per weekday. "
+            "**Weekdays in range** = how many Mon/Tue/… fall in the sidebar dates."
         )
 
         # Always derive from filtered_sales so date range, shop, and employee filters apply
@@ -2277,26 +2376,8 @@ def main():
             if len(valid_sales) > 0:
                 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
-                # Group by day of week
-                day_sales = valid_sales.groupby(day_col)['Net_Sales'].agg(['sum', 'mean', 'count', 'std']).reset_index()
-                day_sales.columns = ['Day', 'Net_Sales_Sum', 'Net_Sales_Mean', 'Transaction_Count', 'Net_Sales_Std']
-
-                # Get gross sales
-                gross_by_day = valid_sales.groupby(day_col)['Gross_Sales'].sum().reset_index()
-                gross_by_day.columns = ['Day', 'Gross_Sales_Sum']
-                day_sales = day_sales.merge(gross_by_day, on='Day', how='left')
-                day_sales['Gross_Sales_Sum'] = day_sales['Gross_Sales_Sum'].fillna(0)
-
-                # Reindex to ensure all days are in order and fill missing days
-                day_sales = day_sales.set_index('Day')
-                for day in day_order:
-                    if day not in day_sales.index:
-                        day_sales.loc[day] = [0, 0, 0, 0, 0]
-
-                day_sales = day_sales.reindex(day_order)
-
-                # Reset index to make Day a column for easier plotting
-                day_sales_plot = day_sales.reset_index()
+                day_agg = _aggregate_weighted_tx_metrics(valid_sales, day_col)
+                day_sales_plot = day_agg.rename(columns={day_col: 'Day'})
 
                 wd_counts = _calendar_weekday_counts(start_date, end_date)
                 if sum(wd_counts.values()) == 0 and valid_sales['Date'].notna().any():
@@ -2316,11 +2397,26 @@ def main():
                     0.0,
                 )
 
+                # Ensure all weekdays appear in charts/table
+                for day in day_order:
+                    if day not in day_sales_plot['Day'].values:
+                        day_sales_plot = pd.concat([day_sales_plot, pd.DataFrame([{
+                            'Day': day, 'Net_Sales_Sum': 0, 'Gross_Sales_Sum': 0,
+                            'Transaction_Weight_Sum': 0, 'Transaction_Count': 0,
+                            'Avg_Net_Transaction': 0, 'Avg_Gross_Transaction': 0,
+                            'Weekdays_In_Range': wd_counts.get(day, 0),
+                            'Avg_Net_Per_Weekday': 0, 'Avg_Gross_Per_Weekday': 0,
+                        }])], ignore_index=True)
+                day_sales_plot['Day'] = pd.Categorical(day_sales_plot['Day'], categories=day_order, ordered=True)
+                day_sales_plot = day_sales_plot.sort_values('Day').reset_index(drop=True)
+
+                st.markdown(f"**{CAPTION_TX_AVG_SECTION}**")
+
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    title = f'Sales by Day of Week - {selected_employee}' if selected_employee != 'All' else 'Sales by Day of Week'
-                    st.subheader("Sales by Day of Week")
+                    title = f'Net sales by day of week - {selected_employee}' if selected_employee != 'All' else 'Net sales by day of week (ex-VAT)'
+                    st.subheader("Net sales by day of week")
                     fig = px.bar(
                         day_sales_plot,
                         x='Day',
@@ -2338,14 +2434,14 @@ def main():
                     render_chart(fig)
 
                 with col2:
-                    title = f'Avg Transaction by Day - {selected_employee}' if selected_employee != 'All' else 'Average Transaction by Day'
-                    st.subheader("Average Transaction by Day")
+                    title = f'Avg net transaction by day - {selected_employee}' if selected_employee != 'All' else 'Avg net transaction by day (ex-VAT)'
+                    st.subheader("Avg net transaction by day")
                     fig = px.bar(
                         day_sales_plot,
                         x='Day',
-                        y='Net_Sales_Mean',
-                        labels={'Net_Sales_Mean': 'Average Sale (£)', 'Day': 'Day of Week'},
-                        color='Net_Sales_Mean',
+                        y='Avg_Net_Transaction',
+                        labels={'Avg_Net_Transaction': 'Avg net tx (£, ex-VAT)', 'Day': 'Day of Week'},
+                        color='Avg_Net_Transaction',
                         color_continuous_scale='Greens',
                         title=title
                     )
@@ -2359,6 +2455,25 @@ def main():
                 col1, col2 = st.columns(2)
 
                 with col1:
+                    title = f'Avg gross transaction by day - {selected_employee}' if selected_employee != 'All' else 'Avg gross transaction by day (till price)'
+                    st.subheader("Avg gross transaction by day")
+                    fig = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Avg_Gross_Transaction',
+                        labels={'Avg_Gross_Transaction': 'Avg gross tx (£, inc VAT)', 'Day': 'Day of Week'},
+                        color='Avg_Gross_Transaction',
+                        color_continuous_scale='Purples',
+                        title=title
+                    )
+                    fig.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order}
+                    )
+                    render_chart(fig)
+
+                with col2:
                     title = f'Transaction Count by Day - {selected_employee}' if selected_employee != 'All' else 'Transaction Count by Day'
                     st.subheader("Transaction Count by Day")
                     fig = px.bar(
@@ -2377,13 +2492,16 @@ def main():
                     )
                     render_chart(fig)
 
-                with col2:
+                col1, col2 = st.columns(2)
+
+                with col1:
                     title = (
-                        f'Avg net per calendar day - {selected_employee}'
+                        f'Avg net revenue per calendar day - {selected_employee}'
                         if selected_employee != 'All'
-                        else 'Average net per calendar day (÷ weekdays in range)'
+                        else 'Avg net revenue per calendar day (ex-VAT)'
                     )
-                    st.subheader("Average net per calendar day")
+                    st.subheader("Avg net revenue per calendar day")
+                    st.caption(CAPTION_NET_REVENUE_ONLY)
                     fig = px.bar(
                         day_sales_plot,
                         x='Day',
@@ -2400,26 +2518,28 @@ def main():
                     )
                     render_chart(fig)
 
-                st.subheader("Average gross per calendar day")
-                fig_g = px.bar(
-                    day_sales_plot,
-                    x='Day',
-                    y='Avg_Gross_Per_Weekday',
-                    labels={'Avg_Gross_Per_Weekday': 'Avg gross (£)', 'Day': 'Day of Week'},
-                    color='Avg_Gross_Per_Weekday',
-                    color_continuous_scale='Purples',
-                    title=(
-                        f'Avg gross per calendar day - {selected_employee}'
-                        if selected_employee != 'All'
-                        else 'Average gross per calendar day (÷ weekdays in range)'
-                    ),
-                )
-                fig_g.update_layout(
-                    height=380,
-                    showlegend=False,
-                    xaxis={'categoryorder': 'array', 'categoryarray': day_order},
-                )
-                render_chart(fig_g)
+                with col2:
+                    st.subheader("Avg gross revenue per calendar day")
+                    st.caption("**Gross revenue** per calendar weekday (inc VAT total ÷ weekdays in range) — not avg till ticket.")
+                    fig_g = px.bar(
+                        day_sales_plot,
+                        x='Day',
+                        y='Avg_Gross_Per_Weekday',
+                        labels={'Avg_Gross_Per_Weekday': 'Avg gross (£)', 'Day': 'Day of Week'},
+                        color='Avg_Gross_Per_Weekday',
+                        color_continuous_scale='Purples',
+                        title=(
+                            f'Avg gross revenue per calendar day - {selected_employee}'
+                            if selected_employee != 'All'
+                            else 'Avg gross revenue per calendar day (inc VAT)'
+                        ),
+                    )
+                    fig_g.update_layout(
+                        height=400,
+                        showlegend=False,
+                        xaxis={'categoryorder': 'array', 'categoryarray': day_order},
+                    )
+                    render_chart(fig_g)
 
                 st.subheader("Weekday detail table")
                 display_df = day_sales_plot.copy()
@@ -2427,10 +2547,8 @@ def main():
                 display_df['Total_Gross'] = display_df['Gross_Sales_Sum'].apply(lambda x: f"£{x:,.2f}")
                 display_df['Avg_Net_Per_Day'] = display_df['Avg_Net_Per_Weekday'].apply(lambda x: f"£{x:,.2f}")
                 display_df['Avg_Gross_Per_Day'] = display_df['Avg_Gross_Per_Weekday'].apply(lambda x: f"£{x:,.2f}")
-                display_df['Avg_Ticket'] = display_df['Net_Sales_Mean'].apply(lambda x: f"£{x:,.2f}")
-                display_df['Std_Dev_Ticket'] = display_df['Net_Sales_Std'].apply(
-                    lambda x: f"£{x:,.2f}" if pd.notna(x) and x > 0 else "N/A"
-                )
+                display_df['Avg_Net_Tx'] = display_df['Avg_Net_Transaction'].apply(lambda x: f"£{x:,.2f}")
+                display_df['Avg_Gross_Tx'] = display_df['Avg_Gross_Transaction'].apply(lambda x: f"£{x:,.2f}")
                 display_df = display_df[
                     [
                         'Day',
@@ -2440,20 +2558,20 @@ def main():
                         'Avg_Net_Per_Day',
                         'Avg_Gross_Per_Day',
                         'Transaction_Count',
-                        'Avg_Ticket',
-                        'Std_Dev_Ticket',
+                        'Avg_Net_Tx',
+                        'Avg_Gross_Tx',
                     ]
                 ]
                 display_df.columns = [
                     'Day',
                     'Weekdays in range',
-                    'Total net',
-                    'Total gross',
-                    'Avg net / that weekday',
-                    'Avg gross / that weekday',
-                    'Transactions',
-                    'Average £ per sale',
-                    'Variation in sale amounts',
+                    'Total net (ex-VAT)',
+                    'Total gross (inc VAT)',
+                    'Avg net revenue / calendar weekday',
+                    'Avg gross revenue / calendar weekday',
+                    'Transactions (weighted)',
+                    'Avg net transaction (ex-VAT)',
+                    'Avg gross transaction (till price)',
                 ]
                 st.dataframe(display_df, width="stretch", hide_index=True)
             else:
@@ -2471,22 +2589,25 @@ def main():
             # Employee-specific detailed analysis
             if len(filtered_sales) > 0:
                 st.subheader("📊 Performance Summary")
+                st.caption(CAPTION_TX_AVG_SECTION)
                 
-                emp_col1, emp_col2, emp_col3, emp_col4 = st.columns(4)
+                emp_tx, emp_avg_net, emp_avg_gross = _avg_transactions_for_frame(filtered_sales)
+                emp_col1, emp_col2, emp_col3, emp_col4, emp_col5 = st.columns(5)
                 
                 with emp_col1:
                     total_sales = filtered_sales['Net_Sales'].sum()
-                    st.metric("Total Sales", f"£{total_sales:,.2f}")
+                    st.metric("Total Net Sales (ex-VAT)", f"£{total_sales:,.2f}")
                 
                 with emp_col2:
-                    avg_sale = filtered_sales['Net_Sales'].mean()
-                    st.metric("Average Sale", f"£{avg_sale:,.2f}")
+                    st.metric("Avg Net Transaction (ex-VAT)", f"£{emp_avg_net:,.2f}", help=AVG_NET_TX_HELP)
                 
                 with emp_col3:
-                    transaction_count = len(filtered_sales)
-                    st.metric("Transactions", f"{transaction_count:,}")
+                    st.metric("Avg Gross Transaction (till price)", f"£{emp_avg_gross:,.2f}", help=AVG_GROSS_TX_HELP)
                 
                 with emp_col4:
+                    st.metric("Transactions (weighted)", f"{emp_tx:,}", help=AVG_TX_COUNT_HELP)
+                
+                with emp_col5:
                     days_active = filtered_sales['Date'].nunique()
                     st.metric("Days Active", f"{days_active}")
                 
@@ -2499,24 +2620,29 @@ def main():
                 
                 if len(comparison_sales) > len(filtered_sales):
                     st.subheader("📈 Performance Comparison")
-                    comp_col1, comp_col2, comp_col3 = st.columns(3)
+                    comp_col1, comp_col2, comp_col3, comp_col4 = st.columns(4)
                     comp_emp_col = 'Commission_Employee' if 'Commission_Employee' in comparison_sales.columns else 'Employee'
-                    all_avg_sale = comparison_sales['Net_Sales'].mean()
+                    _, all_avg_net, all_avg_gross = _avg_transactions_for_frame(comparison_sales)
                     all_total = comparison_sales['Net_Sales'].sum()
                     all_employee_count = comparison_sales[comp_emp_col].nunique()
                     avg_per_employee = all_total / all_employee_count if all_employee_count > 0 else 0
                     
                     with comp_col1:
-                        vs_avg = ((avg_sale - all_avg_sale) / all_avg_sale * 100) if all_avg_sale > 0 else 0
-                        st.metric("Avg Sale vs All", f"£{avg_sale:,.2f}", 
+                        vs_avg = ((emp_avg_net - all_avg_net) / all_avg_net * 100) if all_avg_net > 0 else 0
+                        st.metric("Avg net tx vs all staff", f"£{emp_avg_net:,.2f}", 
                                  delta=f"{vs_avg:+.1f}%", delta_color="normal" if vs_avg >= 0 else "inverse")
                     
                     with comp_col2:
-                        vs_total = ((total_sales - avg_per_employee) / avg_per_employee * 100) if avg_per_employee > 0 else 0
-                        st.metric("Total vs Avg Employee", f"£{total_sales:,.2f}",
-                                 delta=f"{vs_total:+.1f}%", delta_color="normal" if vs_total >= 0 else "inverse")
+                        vs_gross = ((emp_avg_gross - all_avg_gross) / all_avg_gross * 100) if all_avg_gross > 0 else 0
+                        st.metric("Avg gross tx vs all staff", f"£{emp_avg_gross:,.2f}",
+                                 delta=f"{vs_gross:+.1f}%", delta_color="normal" if vs_gross >= 0 else "inverse")
                     
                     with comp_col3:
+                        vs_total = ((total_sales - avg_per_employee) / avg_per_employee * 100) if avg_per_employee > 0 else 0
+                        st.metric("Total net vs avg employee", f"£{total_sales:,.2f}",
+                                 delta=f"{vs_total:+.1f}%", delta_color="normal" if vs_total >= 0 else "inverse")
+                    
+                    with comp_col4:
                         # Rank among all employees (by commission attribution)
                         employee_totals = comparison_sales.groupby(comp_emp_col)['Net_Sales'].sum().sort_values(ascending=False)
                         rank = (employee_totals.index.get_loc(selected_employee) + 1) if selected_employee in employee_totals.index else None
@@ -2573,6 +2699,10 @@ def main():
                 
         else:
             st.header("👥 Employee Performance Analysis")
+            st.caption(
+                f"{CAPTION_NET_VS_GROSS} Leaderboard totals and avg net transaction use **ex-VAT** figures. "
+                "Gross totals are shown in the table; avg gross transaction is in **Key Metrics** and **Shop Comparison**."
+            )
         
         if employee_df_display is not None:
             col1, col2 = st.columns(2)
@@ -2593,14 +2723,15 @@ def main():
                 render_chart(fig)
             
             with col2:
-                st.subheader("Top Employees by Average Transaction")
+                st.subheader("Top Employees by Avg Net Transaction")
+                st.caption("Leaderboard average = total attributed **net (ex-VAT)** ÷ weighted transactions.")
                 top_avg = employee_df_display[employee_df_display['Transaction_Count'] >= 10].nlargest(15, 'Net_Sales_Mean')
                 fig = px.bar(
                     top_avg,
                     x='Net_Sales_Mean',
                     y='Employee',
                     orientation='h',
-                    labels={'Net_Sales_Mean': 'Average Sale (£)'},
+                    labels={'Net_Sales_Mean': 'Avg net transaction (£, ex-VAT)'},
                     color='Net_Sales_Mean',
                     color_continuous_scale='Greens'
                 )
@@ -2734,19 +2865,19 @@ def main():
             export_df = employee_df_display.sort_values('Net_Sales_Sum', ascending=False).copy()
             export_df = export_df.rename(columns={
                 'Net_Sales_Sum': 'Total Net Sales',
-                'Net_Sales_Mean': 'Average Sale',
+                'Net_Sales_Mean': 'Avg net transaction (ex-VAT)',
                 'Transaction_Count': 'Transaction Count',
                 'Gross_Sales_Sum': 'Total Gross Sales',
                 'Refunds_Sum': 'Refunds Sum',
                 'Refund_Rate': 'Refund Rate',
             })
-            export_df = export_df[['Employee', 'Total Net Sales', 'Average Sale', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']]
+            export_df = export_df[['Employee', 'Total Net Sales', 'Avg net transaction (ex-VAT)', 'Transaction Count', 'Total Gross Sales', 'Refunds Sum', 'Refund Rate']]
             col_export, _ = st.columns([1, 4])
             with col_export:
                 st.download_button("📥 Export CSV", export_df.to_csv(index=False), "employee_performance.csv", "text/csv", help="Download table as CSV")
             display_df = export_df.copy()
             display_df['Total Net Sales'] = display_df['Total Net Sales'].apply(lambda x: f"£{float(x):,.2f}")
-            display_df['Average Sale'] = display_df['Average Sale'].apply(lambda x: f"£{float(x):,.2f}")
+            display_df['Avg net transaction (ex-VAT)'] = display_df['Avg net transaction (ex-VAT)'].apply(lambda x: f"£{float(x):,.2f}")
             display_df['Total Gross Sales'] = display_df['Total Gross Sales'].apply(lambda x: f"£{float(x):,.2f}")
             display_df['Refunds Sum'] = display_df['Refunds Sum'].apply(lambda x: f"£{float(x):,.2f}")
             display_df['Refund Rate'] = display_df['Refund Rate'].apply(lambda x: f"{float(x):.2f}%")
@@ -2760,19 +2891,25 @@ def main():
         else:
             st.header("⏰ Hourly Sales Patterns")
 
+        st.caption(
+            f"{CAPTION_NET_VS_GROSS} **This tab:** hourly **net revenue** totals use ex-VAT; "
+            "transaction-average charts show **net and gross** per hour."
+        )
+
         # Always derive from filtered_sales (date range, shop, employee, active/inactive)
         hourly_sales = _compute_hourly_from_sales(filtered_sales)
         if hourly_sales is not None and len(hourly_sales) > 0:
+            st.markdown(f"**{CAPTION_TX_AVG_SECTION}**")
             col1, col2 = st.columns(2)
 
             with col1:
-                title = f'Sales by Hour - {selected_employee}' if selected_employee != 'All' else 'Sales by Hour of Day'
-                st.subheader("Sales by Hour of Day")
+                title = f'Net sales by hour - {selected_employee}' if selected_employee != 'All' else 'Net sales by hour (ex-VAT)'
+                st.subheader("Net sales by hour")
                 fig = px.bar(
                     hourly_sales,
                     x='Hour',
                     y='Net_Sales_Sum',
-                    labels={'Net_Sales_Sum': 'Total Net Sales (£)', 'Hour': 'Hour of Day'},
+                    labels={'Net_Sales_Sum': 'Total net sales (£, ex-VAT)', 'Hour': 'Hour of Day'},
                     color='Net_Sales_Sum',
                     color_continuous_scale='Purples',
                     title=title
@@ -2781,14 +2918,14 @@ def main():
                 render_chart(fig)
 
             with col2:
-                title = f'Avg Transaction by Hour - {selected_employee}' if selected_employee != 'All' else 'Average Transaction Value by Hour'
-                st.subheader("Average Transaction by Hour")
+                title = f'Avg net transaction by hour - {selected_employee}' if selected_employee != 'All' else 'Avg net transaction by hour (ex-VAT)'
+                st.subheader("Avg net transaction by hour")
                 fig = px.line(
                     hourly_sales,
                     x='Hour',
-                    y='Net_Sales_Mean',
+                    y='Avg_Net_Transaction',
                     markers=True,
-                    labels={'Net_Sales_Mean': 'Average Sale (£)', 'Hour': 'Hour of Day'},
+                    labels={'Avg_Net_Transaction': 'Avg net tx (£, ex-VAT)', 'Hour': 'Hour of Day'},
                     title=title
                 )
                 fig.update_layout(height=400)
@@ -2797,13 +2934,27 @@ def main():
             col1, col2 = st.columns(2)
 
             with col1:
-                title = f'Transaction Volume by Hour - {selected_employee}' if selected_employee != 'All' else 'Transaction Volume by Hour'
-                st.subheader("Transaction Volume by Hour")
+                title = f'Avg gross transaction by hour - {selected_employee}' if selected_employee != 'All' else 'Avg gross transaction by hour (till price)'
+                st.subheader("Avg gross transaction by hour")
+                fig = px.line(
+                    hourly_sales,
+                    x='Hour',
+                    y='Avg_Gross_Transaction',
+                    markers=True,
+                    labels={'Avg_Gross_Transaction': 'Avg gross tx (£, inc VAT)', 'Hour': 'Hour of Day'},
+                    title=title
+                )
+                fig.update_layout(height=400)
+                render_chart(fig)
+
+            with col2:
+                title = f'Transaction volume by hour - {selected_employee}' if selected_employee != 'All' else 'Transaction volume by hour (weighted)'
+                st.subheader("Transaction volume by hour")
                 fig = px.bar(
                     hourly_sales,
                     x='Hour',
                     y='Transaction_Count',
-                    labels={'Transaction_Count': 'Number of Transactions', 'Hour': 'Hour of Day'},
+                    labels={'Transaction_Count': 'Transactions (weighted)', 'Hour': 'Hour of Day'},
                     color='Transaction_Count',
                     color_continuous_scale='Blues',
                     title=title
@@ -2811,16 +2962,20 @@ def main():
                 fig.update_layout(height=400, showlegend=False)
                 render_chart(fig)
 
-            with col2:
-                st.subheader("Peak Hours Analysis")
-                peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
-                if len(peak_hours) > 0:
-                    st.write(f"**Top 5 Peak Sales Hours{' - ' + selected_employee if selected_employee != 'All' else ''}:**")
-                    for idx, row in peak_hours.iterrows():
-                        hour_str = f"{int(row['Hour']):02d}:00"
-                        st.write(f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} ({int(row['Transaction_Count'])} transactions)")
-                else:
-                    st.info("No hourly data available for the selected filters.")
+            st.subheader("Peak hours (net revenue)")
+            st.caption(CAPTION_NET_REVENUE_ONLY)
+            peak_hours = hourly_sales.nlargest(5, 'Net_Sales_Sum')
+            if len(peak_hours) > 0:
+                st.write(f"**Top 5 hours by net sales{' — ' + selected_employee if selected_employee != 'All' else ''}:**")
+                for idx, row in peak_hours.iterrows():
+                    hour_str = f"{int(row['Hour']):02d}:00"
+                    st.write(
+                        f"**{hour_str}:** £{row['Net_Sales_Sum']:,.2f} net "
+                        f"({int(row['Transaction_Count'])} tx, avg net tx £{row['Avg_Net_Transaction']:,.2f}, "
+                        f"avg gross tx £{row['Avg_Gross_Transaction']:,.2f})"
+                    )
+            else:
+                st.info("No hourly data available for the selected filters.")
         else:
             st.info(
                 "**Hourly data not available.** Ensure your data has a Time column (or timestamp, created_at, transaction_time) "
@@ -3177,36 +3332,58 @@ def main():
     # TAB 9: Trends & Seasonality
     with tab9:
         st.header("📈 Trends & Seasonality")
+        st.caption(
+            f"{CAPTION_NET_VS_GROSS} **This tab** uses **net (ex-VAT) revenue** for monthly totals, "
+            "daily averages, and seasonality. Monthly table includes **avg net and gross transaction** per month."
+        )
         if len(filtered_sales) == 0:
             st.warning("No data for the selected filters.")
         else:
             with st.expander("📊 Month-over-Month & Year-over-Year", expanded=True):
-                monthly = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('M')).agg(
-                    Net_Sales=('Net_Sales', 'sum'),
-                    Transactions=('Net_Sales', 'count'),
-                    Avg_Sale=('Net_Sales', 'mean')
-                ).reset_index()
-                monthly['Month'] = monthly['Date'].astype(str)
+                mdf = filtered_sales.copy()
+                mdf['MonthPeriod'] = mdf['Date'].dt.to_period('M')
+                monthly = _aggregate_weighted_tx_metrics(mdf, 'MonthPeriod')
+                monthly['Month'] = monthly['MonthPeriod'].astype(str)
+                monthly = monthly.rename(columns={
+                    'Net_Sales_Sum': 'Net_Sales',
+                    'Gross_Sales_Sum': 'Gross_Sales',
+                })
                 monthly['MoM_Change'] = monthly['Net_Sales'].pct_change() * 100
                 monthly['YoY_Change'] = monthly['Net_Sales'].pct_change(periods=12) * 100
                 col1, col2 = st.columns(2)
                 with col1:
-                    fig = px.bar(monthly, x='Month', y='Net_Sales', labels={'Net_Sales': 'Net Sales (£)'}, title='Monthly Sales')
+                    fig = px.bar(monthly, x='Month', y='Net_Sales', labels={'Net_Sales': 'Net sales (£, ex-VAT)'}, title='Monthly net sales')
                     fig.update_layout(height=350)
                     render_chart(fig)
                 with col2:
                     if monthly['MoM_Change'].notna().any():
-                        fig = px.line(monthly, x='Month', y='MoM_Change', markers=True, labels={'MoM_Change': 'MoM % Change'}, title='Month-over-Month % Change')
+                        fig = px.line(monthly, x='Month', y='MoM_Change', markers=True, labels={'MoM_Change': 'MoM % Change'}, title='Month-over-Month % Change (net sales)')
                         fig.add_hline(y=0, line_dash="dash", line_color="gray")
                         fig.update_layout(height=350)
                         render_chart(fig)
-                st.dataframe(monthly[['Month', 'Net_Sales', 'Transactions', 'Avg_Sale', 'MoM_Change', 'YoY_Change']].round(2), width="stretch", hide_index=True)
+                st.markdown(f"**{CAPTION_TX_AVG_SECTION}**")
+                st.dataframe(
+                    monthly[[
+                        'Month', 'Net_Sales', 'Gross_Sales', 'Transaction_Count',
+                        'Avg_Net_Transaction', 'Avg_Gross_Transaction', 'MoM_Change', 'YoY_Change',
+                    ]].round(2),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        'Net_Sales': st.column_config.NumberColumn('Net sales (ex-VAT)', format='£%.2f'),
+                        'Gross_Sales': st.column_config.NumberColumn('Gross sales (inc VAT)', format='£%.2f'),
+                        'Transaction_Count': st.column_config.NumberColumn('Transactions (weighted)', format='%d'),
+                        'Avg_Net_Transaction': st.column_config.NumberColumn('Avg net tx (ex-VAT)', format='£%.2f'),
+                        'Avg_Gross_Transaction': st.column_config.NumberColumn('Avg gross tx (till price)', format='£%.2f'),
+                    },
+                )
             with st.expander("📉 Sales Velocity & Best/Worst Periods", expanded=True):
+                st.caption(CAPTION_NET_REVENUE_ONLY)
                 daily = filtered_sales.groupby(filtered_sales['Date'].dt.date)['Net_Sales'].sum().reset_index()
                 daily['Date'] = pd.to_datetime(daily['Date'])
                 avg_daily = daily['Net_Sales'].mean()
                 weekly = filtered_sales.groupby(filtered_sales['Date'].dt.to_period('W'))['Net_Sales'].sum()
-                st.metric("Average Daily Sales", f"£{avg_daily:,.2f}")
+                st.metric("Average daily net sales (ex-VAT)", f"£{avg_daily:,.2f}")
                 col1, col2 = st.columns(2)
                 with col1:
                     best = daily.loc[daily['Net_Sales'].idxmax()]
@@ -3269,7 +3446,8 @@ def main():
                     })
                 sm = pd.DataFrame(shop_metrics)
                 sm['Refund Rate %'] = np.where(sm['Gross Sales'] > 0, sm['Refunds'] / sm['Gross Sales'] * 100, 0)
-                st.caption(f"Avg Net Transaction: {AVG_NET_TX_HELP} Avg Gross Transaction: {AVG_GROSS_TX_HELP}")
+                st.caption(CAPTION_TX_AVG_SECTION)
+                st.caption("Totals column uses **net (ex-VAT)** and **gross (inc VAT)**. Transaction averages use both bases ÷ weighted transactions.")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     fig = px.bar(sm, x='Shop', y='Net Sales', color='Shop', labels={'Net Sales': 'Net Sales (£)'}, title='Total Net Sales by Shop')
@@ -3325,6 +3503,7 @@ def main():
                 else:
                     st.info("Products column not found. Basket size requires product data.")
             with st.expander("💰 Transaction Size Distribution", expanded=True):
+                st.caption("Buckets use **net (ex-VAT)** transaction value — gross till price is not used here.")
                 bins = [0, 25, 50, 100, 200, 500, 1000, float('inf')]
                 labels_bin = ['£0-25', '£25-50', '£50-100', '£100-200', '£200-500', '£500-1000', '£1000+']
                 tx_dist_df = filtered_sales.copy()
