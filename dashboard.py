@@ -215,10 +215,10 @@ st.set_page_config(
 )
 
 # Chart theme - unified palette matching dashboard gradient
-CHART_COLORWAY = ["#667eea", "#764ba2", "#f093fb", "#4facfe", "#43e97b", "#fa709a"]
+CHART_COLORWAY = ["#4f46e5", "#6366f1", "#818cf8", "#7c3aed", "#34d399", "#f472b6"]
 CHART_THEME = dict(
     template="plotly_white",
-    font=dict(family="Inter, system-ui, sans-serif", size=12),
+    font=dict(family="Geist Sans, ui-sans-serif, system-ui, sans-serif", size=12),
     colorway=CHART_COLORWAY,
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
@@ -252,51 +252,106 @@ def render_chart(fig, height=None, key=None):
 
 # Custom CSS
 def inject_css():
-    bg = "#ffffff"
-    card_bg = "#f8f9fa"
-    text = "#31333f"
-    border = "rgba(102, 126, 234, 0.2)"
+    bg = "#f4f4f5"
+    card_bg = "#ffffff"
+    text = "#18181b"
+    border = "rgba(79, 70, 229, 0.2)"
     # Use st.html for CSS - st.markdown can render style tags as visible text in some deployments
     st.html(f"""
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.2.8/index.css">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
     <style>
     :root {{
         --bg: {bg};
         --card-bg: {card_bg};
         --text: {text};
+        --text-muted: #71717a;
         --border: {border};
-        --font: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        --accent: #4f46e5;
+        --accent-hover: #6366f1;
+        --accent-muted: #eef2ff;
+        --surface: #ffffff;
+        --font: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
     }}
-    /* Apply DM Sans but NOT to spans - Material icon spans need their own font */
-    .stApp, .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3 {{
+    .stApp {{
+        font-family: var(--font);
+        background-color: var(--bg) !important;
+        color: var(--text) !important;
+    }}
+    /* Geist on text — never on Material icon spans. */
+    .stApp p, .stApp label, .stApp h1, .stApp h2, .stApp h3 {{
         font-family: var(--font) !important;
     }}
-    .stApp .stMarkdown span, .stApp [data-testid="stMetric"] span {{
+    .stApp .stMarkdown span:not([data-testid="stIconMaterial"]):not([data-testid="stExpanderIcon"]):not([data-testid="stExpanderIconCheck"]):not([data-testid="stExpanderIconError"]):not([data-testid="stExpanderIconSpinner"]),
+    .stApp [data-testid="stMetric"] span:not([data-testid="stIconMaterial"]):not([data-testid="stExpanderIcon"]) {{
         font-family: var(--font) !important;
     }}
-    /* Fix Material icons: sidebar collapse + expanders show "keyboard_double_arrow_right" when font overridden.
-       Hide broken icon text and show clean arrows. */
-    [data-testid="collapsedControl"] {{
-        font-size: 0;
+    .stApp [data-testid="stIconMaterial"],
+    .stApp [data-testid="stExpanderIcon"],
+    .stApp [data-testid="stExpanderIconCheck"],
+    .stApp [data-testid="stExpanderIconError"],
+    .stApp [data-testid="stExpanderIconSpinner"] {{
+        font-family: "Material Symbols Outlined" !important;
+        font-weight: normal !important;
+        font-style: normal !important;
+        font-feature-settings: "liga" !important;
+        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24 !important;
+        letter-spacing: normal !important;
+        text-transform: none !important;
+        line-height: 1 !important;
+        -webkit-font-smoothing: antialiased !important;
     }}
-    [data-testid="collapsedControl"]::before {{
-        content: "»";
-        font-size: 1.25rem;
-        font-family: var(--font) !important;
-        font-weight: 700;
-        display: inline-block;
-    }}
-    /* Expander icons - hide keyboard_double_arrow_right text, show › (only target icon span, not label) */
-    .stExpander summary [class*="material"] {{
+    .stApp [data-testid="stExpanderIcon"],
+    .stExpander [data-testid="stIconMaterial"],
+    [data-testid="stExpander"] [data-testid="stIconMaterial"],
+    [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"],
+    [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"] {{
         font-size: 0 !important;
         line-height: 0 !important;
+        color: transparent !important;
+        position: relative !important;
+        display: inline-block !important;
+        width: 1.15rem !important;
+        height: 1.15rem !important;
+        overflow: hidden !important;
+        vertical-align: middle !important;
     }}
-    .stExpander summary [class*="material"]::before {{
-        content: "›";
-        font-size: 1.1rem;
+    .stApp [data-testid="stExpanderIcon"]::after,
+    .stExpander [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpander"] [data-testid="stIconMaterial"]::after,
+    [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"]::after {{
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        color: #71717a !important;
         font-family: var(--font) !important;
-        font-weight: 700;
+        font-weight: 700 !important;
+        font-size: 1.1rem !important;
+        line-height: 1.15rem !important;
+        display: block !important;
+    }}
+    .stExpander summary[aria-expanded="false"] [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpander"] summary[aria-expanded="false"] [data-testid="stIconMaterial"]::after,
+    .stExpander details:not([open]) > summary [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpander"] details:not([open]) > summary [data-testid="stIconMaterial"]::after,
+    .stApp [data-testid="stExpanderIcon"]::after {{
+        content: "›" !important;
+    }}
+    .stExpander summary[aria-expanded="true"] [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpander"] summary[aria-expanded="true"] [data-testid="stIconMaterial"]::after,
+    .stExpander details[open] > summary [data-testid="stIconMaterial"]::after,
+    [data-testid="stExpander"] details[open] > summary [data-testid="stIconMaterial"]::after,
+    .stExpander details[open] > summary [data-testid="stExpanderIcon"]::after {{
+        content: "⌄" !important;
+    }}
+    [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::after {{
+        content: "‹" !important;
+        font-size: 1.25rem !important;
+    }}
+    [data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"]::after {{
+        content: "›" !important;
+        font-size: 1.25rem !important;
     }}
     .header-bar {{
         display: flex;
@@ -304,7 +359,7 @@ def inject_css():
         justify-content: space-between;
         padding: 1rem 1.5rem;
         margin: -1rem -1rem 1rem -1rem;
-        background: linear-gradient(90deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.08) 100%);
+        background: linear-gradient(90deg, rgba(79, 70, 229, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%);
         border-bottom: 1px solid {border};
         font-family: var(--font);
     }}
@@ -312,7 +367,7 @@ def inject_css():
         font-size: 1.35rem;
         font-weight: 700;
         letter-spacing: -0.02em;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
@@ -325,7 +380,7 @@ def inject_css():
     .nav-section {{
         margin: 1rem 0;
         padding: 0.5rem 0;
-        border-top: 1px solid rgba(102, 126, 234, 0.2);
+        border-top: 1px solid rgba(79, 70, 229, 0.2);
     }}
     .nav-label {{
         font-size: 0.7rem;
@@ -338,7 +393,7 @@ def inject_css():
     .sidebar-kpi-card {{
         margin-top: 1.5rem;
         padding: 1rem;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.15) 100%);
+        background: linear-gradient(135deg, rgba(79, 70, 229, 0.2) 0%, rgba(99, 102, 241, 0.15) 100%);
         border-radius: 12px;
         border: 1px solid {border};
         text-align: center;
@@ -346,7 +401,7 @@ def inject_css():
     .sidebar-kpi-value {{
         font-size: 1.5rem;
         font-weight: 700;
-        color: #667eea;
+        color: #4f46e5;
     }}
     .filter-summary {{
         display: flex;
@@ -355,21 +410,21 @@ def inject_css():
         gap: 10px;
         padding: 14px 20px;
         margin-bottom: 1.5rem;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.06) 0%, rgba(118, 75, 162, 0.06) 50%, rgba(240, 147, 251, 0.04) 100%);
+        background: linear-gradient(135deg, rgba(79, 70, 229, 0.06) 0%, rgba(99, 102, 241, 0.06) 50%, rgba(165, 180, 252, 0.08) 100%);
         border-radius: 14px;
         border: 1px solid {border};
         font-size: 0.9rem;
         font-family: var(--font);
     }}
     .filter-badge {{
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
         color: white;
         padding: 6px 14px;
         border-radius: 24px;
         font-weight: 600;
         font-size: 0.85rem;
         letter-spacing: 0.02em;
-        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.25);
+        box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
     }}
     .filter-badge-muted {{
         background: var(--card-bg);
@@ -381,12 +436,12 @@ def inject_css():
         border: 1px solid {border};
     }}
     .metric-card {{
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
         padding: 1.5rem;
         border-radius: 12px;
         color: white;
         text-align: center;
-        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        box-shadow: 0 4px 20px rgba(79, 70, 229, 0.3);
         border: 1px solid rgba(255,255,255,0.12);
     }}
     .metric-card-wrapper {{
@@ -425,9 +480,9 @@ def inject_css():
     }}
     .stTabs [data-baseweb="tab"][aria-selected="true"],
     .stTabs [role="tab"][aria-selected="true"] {{
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
         color: white !important;
-        box-shadow: 0 2px 12px rgba(102, 126, 234, 0.4);
+        box-shadow: 0 2px 12px rgba(79, 70, 229, 0.4);
     }}
     .stTabs [data-baseweb="tab"][aria-selected="false"],
     .stTabs [role="tab"][aria-selected="false"] {{
@@ -437,13 +492,13 @@ def inject_css():
     }}
     .stTabs [data-baseweb="tab"][aria-selected="false"]:hover,
     .stTabs [role="tab"][aria-selected="false"]:hover {{
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.12) 100%) !important;
-        border-color: rgba(102, 126, 234, 0.4);
+        background: linear-gradient(135deg, rgba(79, 70, 229, 0.12) 0%, rgba(99, 102, 241, 0.12) 100%) !important;
+        border-color: rgba(79, 70, 229, 0.4);
     }}
     .empty-state {{
         text-align: center;
         padding: 4rem 2rem;
-        background: linear-gradient(180deg, var(--card-bg) 0%, rgba(102, 126, 234, 0.04) 100%);
+        background: linear-gradient(180deg, var(--card-bg) 0%, rgba(79, 70, 229, 0.04) 100%);
         border-radius: 16px;
         border: 2px dashed {border};
         color: var(--text);
@@ -474,8 +529,8 @@ def inject_css():
         transition: box-shadow 0.2s ease, border-color 0.2s ease;
     }}
     [data-testid="stMetric"]:hover {{
-        box-shadow: 0 4px 16px rgba(102, 126, 234, 0.12);
-        border-color: rgba(102, 126, 234, 0.25);
+        box-shadow: 0 4px 16px rgba(79, 70, 229, 0.12);
+        border-color: rgba(79, 70, 229, 0.25);
     }}
     .context-banner {{
         padding: 14px 20px;
@@ -486,8 +541,8 @@ def inject_css():
         display: flex;
         align-items: center;
         gap: 12px;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(118, 75, 162, 0.08) 100%);
-        border: 1px solid rgba(102, 126, 234, 0.25);
+        background: linear-gradient(135deg, rgba(79, 70, 229, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%);
+        border: 1px solid rgba(79, 70, 229, 0.25);
     }}
     .context-banner.warning {{
         background: linear-gradient(135deg, rgba(250, 204, 21, 0.12) 0%, rgba(245, 158, 11, 0.08) 100%);
@@ -501,6 +556,32 @@ def inject_css():
     }}
     div[data-testid="stHorizontalBlock"] > div:has([data-testid="stMetric"]) {{
         margin-bottom: 0.25rem;
+    }}
+    [data-testid="stSidebar"] {{
+        background-color: var(--surface) !important;
+        border-right: 1px solid #e4e4e7 !important;
+    }}
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] label {{
+        color: var(--text) !important;
+    }}
+    .stButton > button[kind="primary"] {{
+        background-color: var(--accent) !important;
+        border-color: var(--accent) !important;
+        color: #ffffff !important;
+        border-radius: 12px !important;
+        font-weight: 600 !important;
+    }}
+    .stButton > button[kind="primary"]:hover {{
+        background-color: var(--accent-hover) !important;
+        border-color: var(--accent-hover) !important;
+    }}
+    .stButton > button[kind="secondary"] {{
+        border-radius: 12px !important;
+        border-color: #d4d4d8 !important;
+    }}
+    div[data-baseweb="tab-highlight"] {{
+        background-color: var(--accent) !important;
     }}
     </style>
     """)
